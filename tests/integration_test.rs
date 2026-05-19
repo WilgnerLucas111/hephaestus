@@ -1,9 +1,9 @@
 use hephaestus::{
     interceptor::interceptor::{HephaestusInterceptor, InterceptorConfig, PermissionMode, Skill, SkillResult},
-    memory::genome_store::GenomeStore,
+    memory::genome_store::{GenomeStore, RepairGenome, RejectionRecord},
     orchestration::bifurcated_agent::{BifurcatedAgent, BifurcatedAgentConfig},
 };
-use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 
 // Test genome store operations
 #[tokio::test]
@@ -13,37 +13,67 @@ async fn test_genome_store_operations() {
     let db_path = std::path::PathBuf::from(format!("integration_test_{}.db", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     let genome_store = GenomeStore::open(&db_path).expect("Failed to create genome store");
     
-    // Create a test genome hash and content
-    let test_hash = "test_skill_hash".to_string();
-    let test_content = b"fn test() { panic!() }".to_vec();
+    // Create a test genome
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let test_genome = RepairGenome {
+        hash: "test_skill_hash".to_string(),
+        original_code: "fn test() { panic!() }".to_string(),
+        telemetry_trigger: Some("panic: index out of bounds".to_string()),
+        monkey_hypotheses: vec!["fn test() { }".to_string()],
+        rejected_patches: vec![RejectionRecord {
+            patch: "fn test() { let x = 1; }".to_string(),
+            reason: "does not match original behavior".to_string(),
+            timestamp: now,
+        }],
+        final_repaired_code: Some("fn test() { }".to_string()),
+        narrative_summary: Some("The Wild Monkey generated a hypothesis. The Neutral Judge found it safe. The Angry Master applied no penalties. The Narrative Agent recorded the verdict.".to_string()),
+        timestamp: now,
+    };
     
     // Store the genome
-    genome_store.store_genome(&test_hash, &test_content)
+    genome_store.store_genome(&test_genome)
         .expect("Failed to store genome");
     
     // Retrieve the genome by hash
-    let retrieved = genome_store.get_genome(&test_hash)
+    let retrieved = genome_store.get_genome(&test_genome.hash)
         .expect("Failed to get genome");
     
     assert!(retrieved.is_some(), "Expected genome to be found");
-    assert_eq!(retrieved.unwrap(), test_content, "Retrieved content does not match stored content");
+    if let Some(ref r) = retrieved {
+        assert_eq!(r.hash, test_genome.hash);
+        assert_eq!(r.original_code, test_genome.original_code);
+        assert_eq!(r.telemetry_trigger, test_genome.telemetry_trigger);
+        assert_eq!(r.monkey_hypotheses, test_genome.monkey_hypotheses);
+        assert_eq!(r.rejected_patches, test_genome.rejected_patches);
+        assert_eq!(r.final_repaired_code, test_genome.final_repaired_code);
+        assert_eq!(r.narrative_summary, test_genome.narrative_summary);
+        assert_eq!(r.timestamp, test_genome.timestamp);
+    }
     
     // Test updating the genome with new content
-    let new_content = b"fn test() { }".to_vec();
-    genome_store.store_genome(&test_hash, &new_content)
+    let mut updated_genome = test_genome.clone();
+    updated_genome.final_repaired_code = Some("fn test() { let x = 42; }".to_string());
+    updated_genome.timestamp = now + 1;
+    genome_store.store_genome(&updated_genome)
         .expect("Failed to update genome");
     
-    let updated = genome_store.get_genome(&test_hash)
+    let updated = genome_store.get_genome(&test_genome.hash)
         .expect("Failed to get updated genome");
     
     assert!(updated.is_some(), "Expected updated genome to be found");
-    assert_eq!(updated.unwrap(), new_content, "Updated content does not match stored content");
+    if let Some(ref r) = updated {
+        assert_eq!(r.final_repaired_code, Some("fn test() { let x = 42; }".to_string()));
+        assert_eq!(r.timestamp, now + 1);
+    }
     
     // Test deleting the genome
-    genome_store.delete_genome(&test_hash)
+    genome_store.delete_genome(&test_genome.hash)
         .expect("Failed to delete genome");
     
-    let deleted = genome_store.get_genome(&test_hash)
+    let deleted = genome_store.get_genome(&test_genome.hash)
         .expect("Failed to get genome after deletion");
     
     assert!(deleted.is_none(), "Expected genome to be not found after deletion");
