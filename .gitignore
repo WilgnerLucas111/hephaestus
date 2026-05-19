@@ -1,0 +1,7 @@
+/target
+
+*.db
+*.log
+.agents/
+.env
+skills-lock.json

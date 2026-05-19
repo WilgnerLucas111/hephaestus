@@ -1,0 +1,430 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{mpsc, Mutex, Semaphore};
+use tokio::task::JoinHandle;
+
+use crate::error::{HephaestusError, Result};
+use crate::memory::genome_store::GenomeStore;
+use crate::ast::analyzer::ASTAnalyzer;
+use crate::investigation::protocol::{InvestigationPhase, InvestigationOutput};
+use crate::sandbox::executor::{execute_in_sandbox, PermissionMode, SandboxConfig, SandboxResult};
+use crate::interceptor::interceptor::{SkillResult, Skill};
+
+/// Outcome of a repair attempt
+#[derive(Debug, Clone)]
+pub struct RepairOutcome {
+    pub skill_name: String,
+    pub success: bool,
+    pub confidence: f32,
+    pub repair_time_ms: u64,
+    pub mutation_applied: Option<String>,
+}
+
+/// Configuration for the bifurcated agent
+#[derive(Debug, Clone)]
+pub struct BifurcatedAgentConfig {
+    pub max_parallel_repairs: usize,
+    pub reinvoke_after_successful_repair: bool,
+    pub log_dir: std::path::PathBuf,
+}
+
+/// Main skill runner (simplified)
+#[derive(Debug, Clone)]
+pub struct SkillRunner {
+    // In a full implementation, this would contain the actual skill functions
+}
+
+impl Default for SkillRunner {
+    fn default() -> Self {
+        Self {}
+    }
+}
+
+impl SkillRunner {
+    pub async fn run_skill(&self, skill: &Skill) -> Result<SkillResult> {
+        // In a real implementation, this would invoke the skill function
+        // For now, we'll simulate a skill that sometimes fails
+        Ok(SkillResult::Success)
+    }
+}
+}
+
+impl SkillRunner {
+    pub async fn run_skill(&self, skill: &Skill) -> Result<SkillResult> {
+        // In a real implementation, this would invoke the skill function
+        // For now, we'll simulate a skill that sometimes fails
+        Ok(SkillResult::Success)
+    }
+}
+}
+
+impl SkillRunner {
+    pub async fn run_skill(&self, skill: &Skill) -> Result<SkillResult> {
+        // In a real implementation, this would invoke the skill function
+        // For now, we'll simulate a skill that sometimes fails
+        Ok(SkillResult::Success)
+    }
+}
+
+
+
+
+
+/// Main bifurcated agent structure
+pub struct BifurcatedAgent {
+    /// Main skill runner
+    skill_runner: SkillRunner,
+    
+    /// Background repair handles
+    repair_tasks: Vec<JoinHandle<RepairOutcome>>,
+    
+    /// Configuration
+    config: BifurcatedAgentConfig,
+    
+    /// Shared genome store
+    genome_store: Arc<Mutex<GenomeStore>>,
+    
+    /// Shared AST analyzer
+    ast_analyzer: Arc<Mutex<ASTAnalyzer>>,
+    
+    /// Semaphore to limit concurrent repairs
+    repair_semaphore: Arc<Semaphore>,
+}
+
+impl BifurcatedAgent {
+    /// Create a new bifurcated agent
+    pub fn new(
+        config: BifurcatedAgentConfig,
+        genome_store: GenomeStore,
+    ) -> Result<Self> {
+        let genome_store = Arc::new(Mutex::new(genome_store));
+        let ast_analyzer = Arc::new(tokio::sync::Mutex::new(ASTAnalyzer::new(tree_sitter_rust::language())?));
+        let repair_semaphore = Arc::new(Semaphore::new(config.max_parallel_repairs));
+
+        Ok(Self {
+            skill_runner: SkillRunner::default(),
+            repair_tasks: Vec::new(),
+            config,
+            genome_store,
+            ast_analyzer,
+            repair_semaphore,
+        })
+    }
+
+    /// Execute skill with bifurcated repair
+    /// Main loop returns immediately; repair happens in background
+    pub async fn execute_skill_bifurcated(
+        &mut self,
+        skill: &Skill,
+        interceptor: &crate::interceptor::interceptor::HephaestusInterceptor,
+    ) -> Result<SkillResult> {
+        // Main path: execute skill
+        let skill_result = self.skill_runner.run_skill(skill).await?;
+        
+        // If error occurred, spawn background repair (non-blocking)
+        if let SkillResult::Failure(_) = skill_result {
+            if self.repair_tasks.len() < self.config.max_parallel_repairs {
+                let skill_clone = skill.clone();
+                let interceptor_clone = interceptor.clone();
+                let genome_store_clone = self.genome_store.clone();
+                let ast_analyzer_clone = self.ast_analyzer.clone();
+                let config_clone = self.config.clone();
+                let mut repair_semaphore = self.repair_semaphore.clone();
+
+                 // Spawn repair in background
+                 let start_time = std::time::Instant::now();
+                 let repair_handle = tokio::spawn(async move {
+                     match Self::run_repair_pipeline(
+                         skill_clone,
+                         interceptor_clone,
+                         genome_store_clone,
+                         ast_analyzer_clone,
+                         config_clone,
+                         &repair_semaphore,
+                     ).await {
+                         Ok(outcome) => outcome,
+                         Err(e) => {
+                             // Log the error but still return a RepairOutcome
+                             eprintln!("Error in repair pipeline: {}", e);
+                             RepairOutcome {
+                                 skill_name: skill_clone.name,
+                                 success: false,
+                                 confidence: 0.0,
+                                 repair_time_ms: start_time.elapsed().as_millis() as u64,
+                                 mutation_applied: None,
+                             }
+                         }
+                     }
+                 });
+                
+                self.repair_tasks.push(repair_handle);
+            }
+        }
+        
+        Ok(skill_result)
+    }
+
+     /// Background repair pipeline (10 steps from HEPHAESTUS_BLUEPRINT)
+     async fn run_repair_pipeline(
+         skill: Skill,
+         interceptor: crate::interceptor::interceptor::HephaestusInterceptor,
+         genome_store: Arc<Mutex<GenomeStore>>,
+         ast_analyzer: Arc<Mutex<ASTAnalyzer>>,
+         config: BifurcatedAgentConfig,
+         repair_semaphore: &Arc<Semaphore>,
+     ) -> crate::error::Result<RepairOutcome> {
+        let start_time = std::time::Instant::now();
+        let _permit = repair_semaphore.acquire().await;
+
+        // Step 1: Extract error context (from interceptor)
+        // In a real implementation, we would get the RepairTrigger from the interceptor
+        // For now, we'll simulate having a trigger
+        let trigger = crate::interceptor::interceptor::RepairTrigger {
+            skill_name: skill.name.clone(),
+            error_message: "Simulated error".to_string(),
+            error_keywords: vec!["error".to_string()],
+            stack_trace: Vec::new(),
+            memory_snapshot: crate::interceptor::interceptor::TimeTravelSnapshot {
+                stack_frames: Vec::new(),
+                heap_regions: Vec::new(),
+                registers: crate::interceptor::interceptor::RegisterSnapshot {
+                    rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0, rsp: 0,
+                    r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+                },
+                cwd: std::env::current_dir().unwrap_or_default(),
+                env_vars: HashMap::new(),
+                process_info: crate::interceptor::interceptor::ProcessInfo {
+                    pid: 0, ppid: 0, uid: 0, gid: 0,
+                },
+                system_time_ns: 0,
+            },
+             timestamp_ns: std::time::SystemTime::now()
+                 .duration_since(std::time::UNIX_EPOCH)
+                 .map_err(|e| HephaestusError::Internal(e.to_string()))?
+                 .as_nanos() as u64,
+        };
+
+         // Step 2: AST diagnosis
+         let mut analyzer = ast_analyzer.lock().await;
+         let diagnosis = match analyzer.diagnose(&skill.code, 1, &vec![]) {
+             Ok(d) => d,
+             Err(_) => {
+                 return Ok(RepairOutcome {
+                     skill_name: skill.name,
+                     success: false,
+                     confidence: 0.0,
+                     repair_time_ms: start_time.elapsed().as_millis() as u64,
+                     mutation_applied: None,
+                 });
+             }
+         };
+
+        // Step 3: Extract subgraph (token budgeting) - simplified
+        // In a full implementation, we would extract a subgraph based on token budget
+        let subgraph = diagnosis.slim_nodes.clone();
+
+        // Step 4: 7-phase investigation (with LLM) - simplified
+        let investigation = match Self::run_investigation(&diagnosis, &trigger).await {
+            Ok(inv) => inv,
+            Err(_) => {
+                return RepairOutcome {
+                    skill_name: skill.name,
+                    success: false,
+                    confidence: 0.0,
+                    repair_time_ms: start_time.elapsed().as_millis() as u64,
+                    mutation_applied: None,
+                };
+            }
+        };
+
+         // Step 5: Propose mutations - simplified
+         let proposals = match Self::propose_mutations(&diagnosis, &investigation).await {
+             Ok(p) => p,
+             Err(_) => {
+                 return Ok(RepairOutcome {
+                     skill_name: skill.name,
+                     success: false,
+                     confidence: 0.0,
+                     repair_time_ms: start_time.elapsed().as_millis() as u64,
+                     mutation_applied: None,
+                 });
+             }
+         };
+
+        let best_mutation = proposals.first().cloned();
+
+        // Step 6-8: Sandbox validation → Execute repair
+        let repair_success = if let Some(mutation) = best_mutation.clone() {
+             let sandbox_config = SandboxConfig {
+                 permission_mode: PermissionMode::AutoRepair,
+                 timeout_ms: 5000,
+                 cwd: std::env::current_dir().unwrap_or_default(),
+                 enable_network: false,
+                 enable_user_namespace: true,
+                 drop_capabilities: true,
+             };
+
+             // Validate in sandbox
+             let validation_result = match Self::validate_in_sandbox(&mutation, &sandbox_config).await {
+                 Ok(v) => v,
+                 Err(e) => {
+                     return Ok(RepairOutcome {
+                         skill_name: skill.name,
+                         success: false,
+                         confidence: 0.0,
+                         repair_time_ms: start_time.elapsed().as_millis() as u64,
+                         mutation_applied: None,
+                     });
+                 }
+             };
+
+            if validation_result.success {
+                // Execute repair (apply mutation)
+                // In a full implementation, we would apply the mutation to the skill code
+                // For now, we'll just record that we applied a mutation
+                RepairOutcome {
+                    skill_name: skill.name,
+                    success: true,
+                    confidence: 0.8, // Placeholder confidence
+                    repair_time_ms: start_time.elapsed().as_millis() as u64,
+                    mutation_applied: Some(mutation),
+                }
+            } else {
+                RepairOutcome {
+                    skill_name: skill.name,
+                    success: false,
+                    confidence: 0.0,
+                    repair_time_ms: start_time.elapsed().as_millis() as u64,
+                    mutation_applied: None,
+                }
+            }
+        } else {
+            RepairOutcome {
+                skill_name: skill.name,
+                success: false,
+                confidence: 0.0,
+                repair_time_ms: start_time.elapsed().as_millis() as u64,
+                mutation_applied: None,
+            }
+        };
+
+        // Step 9: Store Genome (rusqlite)
+        if let Some(ref mutation) = repair_success.mutation_applied {
+            // In a full implementation, we would store the repair genome
+            // For now, we'll just log that we would store it
+            println!("Would store repair genome for skill {} with mutation {}", skill.name, mutation);
+        }
+
+        // Step 10: Emit Completion Event
+        // In a full implementation, we would emit an event via the interceptor's event sender
+
+        repair_success
+    }
+
+    /// Run the 7-phase investigation protocol (simplified)
+    async fn run_investigation(
+        diagnosis: &crate::ast::analyzer::ASTDiagnosis,
+        trigger: &crate::interceptor::interceptor::RepairTrigger,
+    ) -> Result<crate::investigation::protocol::InvestigationOutput> {
+        // In a full implementation, this would run the full 7-phase investigation
+        // For now, we'll return a dummy investigation output
+        Ok(crate::investigation::protocol::InvestigationOutput {
+            problem: crate::investigation::protocol::ProblemDefinition {
+                expected_behavior: "Should work".to_string(),
+                observed_behavior: "But failed".to_string(),
+                scope: "Test".to_string(),
+                reproducible: true,
+            },
+            reproduction: crate::investigation::protocol::ReproductionAttempt {
+                method: crate::investigation::protocol::ReproductionMethod::ExistingTest,
+                steps: vec![],
+                observed_result: "Failed".to_string(),
+                consistent: true,
+            },
+            evidence: crate::investigation::protocol::EvidenceCollection {
+                facts: vec![
+                    crate::investigation::protocol::Fact {
+                        layer: "Entry".to_string(),
+                        input_value: "test".to_string(),
+                        output_value: "failed".to_string(),
+                        transformed: false,
+                        condition: "error".to_string(),
+                    }
+                ],
+            },
+            hypothesis: crate::investigation::protocol::Hypothesis {
+                root_cause: "Null pointer".to_string(),
+                evidence: "Stack trace shows crash".to_string(),
+            },
+            guard: crate::investigation::protocol::FailureGuard {
+                guard_type: crate::investigation::protocol::GuardType::AutomatedTest,
+                description: "Test passes before fix".to_string(),
+                passes_before_fix: true,
+                passes_after_fix: false,
+            },
+            fix: crate::investigation::protocol::CodeFix {
+                original_code: "int x = *ptr;".to_string(),
+                fixed_code: "if (ptr) { int x = *ptr; } else { int x = 0; }".to_string(),
+                rationale: "Added null check".to_string(),
+                changes_count: 2,
+            },
+            verification: crate::investigation::protocol::Verification {
+                original_reproduction_still_fails: false,
+                guard_now_passes: true,
+                related_tests_pass: true,
+                side_effects_none: true,
+            },
+        })
+    }
+
+    /// Propose mutations based on diagnosis and investigation (simplified)
+    async fn propose_mutations(
+        _diagnosis: &crate::ast::analyzer::ASTDiagnosis,
+        _investigation: &crate::investigation::protocol::InvestigationOutput,
+    ) -> Result<Vec<String>> {
+        // In a full implementation, this would use an LLM to propose mutations
+        // For now, we'll return a dummy mutation
+        Ok(vec![
+            "if (ptr == nullptr) { return 0; }".to_string(),
+        ])
+    }
+
+     /// Validate a mutation in the sandbox (simplified)
+     async fn validate_in_sandbox(
+         mutation: &str,
+         config: &SandboxConfig,
+     ) -> Result<SandboxResult> {
+         // In a full implementation, we would create a test script that applies the mutation and runs tests
+         // For now, we'll just run a simple command to see if the sandbox works
+         let code = format!(
+             r#"
+             echo "Validating mutation: {}"
+             # In a real implementation, we would compile and test the mutated code here
+             exit 0
+             "#,
+             mutation
+         );
+         
+         execute_in_sandbox(&code, config).await.map_err(HephaestusError::Sandbox)
+     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn test_bifurcated_agent_creation() -> Result<()> {
+        let config = BifurcatedAgentConfig {
+            max_parallel_repairs: 2,
+            reinvoke_after_successful_repair: true,
+            log_dir: std::path::PathBuf::from("/tmp/logs"),
+        };
+        let genome_store = crate::memory::genome_store::GenomeStore::new()?;
+        let agent = BifurcatedAgent::new(config, genome_store)?;
+        assert_eq!(agent.config.max_parallel_repairs, 2);
+        Ok(())
+    }
+}
