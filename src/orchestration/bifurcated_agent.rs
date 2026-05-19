@@ -3,10 +3,9 @@ use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinHandle;
 
 use crate::ast::analyzer::ASTAnalyzer;
-use crate::error::{HephaestusError, Result};
+use crate::error::Result;
 use crate::interceptor::interceptor::{Skill, SkillResult};
 use crate::memory::genome_store::GenomeStore;
-use crate::sandbox::executor::{PermissionMode, SandboxConfig, SandboxResult, execute_in_sandbox};
 
 /// Outcome of a repair attempt
 #[derive(Debug, Clone)]
@@ -106,41 +105,40 @@ impl BifurcatedAgent {
         if !matches!(skill_result, SkillResult::Success)
             && self.repair_tasks.len() < self.config.max_parallel_repairs {
                  
-                  let _interceptor_clone = interceptor.clone();
-                  let skill_clone = skill.clone();
-                  let genome_store_clone = self.genome_store.clone();
-                  let ast_analyzer_clone = self.ast_analyzer.clone();
-                  let config_clone = self.config.clone();
-                  let repair_semaphore_clone = self.repair_semaphore.clone();
+                   let _interceptor_clone = interceptor.clone();
+                   let skill_clone = skill.clone();
+                   let genome_store_clone = self.genome_store.clone();
+                   let _ast_analyzer_clone = self.ast_analyzer.clone();
+                   let config_clone = self.config.clone();
+                   let repair_semaphore_clone = self.repair_semaphore.clone();
 
-                // Spawn repair in background
-                let skill_name_forerror = skill.name.clone();
-                let start_time = std::time::Instant::now();
-                let repair_handle = tokio::spawn(async move {
-                    match Self::run_repair_pipeline(
-                        skill_clone,
-                        repair_trigger,
-                        genome_store_clone,
-                        ast_analyzer_clone,
-                        config_clone,
-                        &repair_semaphore_clone,
-                    )
-                    .await
-                    {
-                        Ok(outcome) => outcome,
-                             Err(_e) => {
-                                 // Log the error but still return a RepairOutcome
-                                 eprintln!("Error in repair pipeline: {}", _e);
-                                 RepairOutcome {
-                                     skill_name: skill_name_forerror,
-                                     success: false,
-                                     confidence: 0.0,
-                                     repair_time_ms: start_time.elapsed().as_millis() as u64,
-                                     mutation_applied: None,
-                                 }
+                 // Spawn repair in background
+                 let skill_name_forerror = skill.name.clone();
+                 let start_time = std::time::Instant::now();
+                 let repair_handle = tokio::spawn(async move {
+                     match Self::run_repair_pipeline(
+                         skill_clone,
+                         repair_trigger,
+                         genome_store_clone,
+                         config_clone,
+                         &repair_semaphore_clone,
+                     )
+                     .await
+                     {
+                         Ok(outcome) => outcome,
+                         Err(_e) => {
+                             // Log the error but still return a RepairOutcome
+                             eprintln!("Error in repair pipeline: {}", _e);
+                             RepairOutcome {
+                                 skill_name: skill_name_forerror,
+                                 success: false,
+                                 confidence: 0.0,
+                                 repair_time_ms: start_time.elapsed().as_millis() as u64,
+                                 mutation_applied: None,
                              }
-                    }
-                });
+                         }
+                     }
+                 });
 
                 self.repair_tasks.push(repair_handle);
             }
@@ -150,267 +148,131 @@ impl BifurcatedAgent {
 
 
 
-    /// Background repair pipeline (10 steps from HEPHAESTUS_BLUEPRINT)
+    /// Background repair pipeline using the Tribunal architecture
     async fn run_repair_pipeline(
         skill: Skill,
         repair_trigger: Option<crate::interceptor::interceptor::RepairTrigger>,
         _genome_store: Arc<Mutex<GenomeStore>>,
-        ast_analyzer: Arc<Mutex<ASTAnalyzer>>,
         _config: BifurcatedAgentConfig,
         repair_semaphore: &Arc<Semaphore>,
     ) -> crate::error::Result<RepairOutcome> {
         let start_time = std::time::Instant::now();
         let _permit = repair_semaphore.acquire().await;
-        let skill_name = skill.name.clone();
+        let _skill_name = skill.name.clone();
 
-        // Extract line and column from error message if available - simplified version without regex
-        let (error_line, error_column) = if let Some(ref trigger) = repair_trigger {
-            // Simple extraction: look for colon-separated numbers
-            let mut line = 1u32;
-            let mut _column: Option<u32> = None;
-            
-            // Very basic error line extraction
-            for (i, ch) in trigger.error_message.char_indices() {
-                if ch == ':' {
-                    // Try to parse the following digits as line number
-                    let rest = &trigger.error_message[i+1..];
-                    if let Ok(num) = rest.split_whitespace().next().unwrap_or("").parse::<u32>() {
-                        line = num;
-                        break;
-                    }
-                }
-            }
-            
-            (line, None)
-        } else {
-            (1, None)
+        // Initialize an empty RepairGenome (Ledger)
+        let mut genome = crate::memory::genome_store::RepairGenome {
+            hash: "".to_string(), // Will be computed later if needed
+            original_code: skill.code.clone(),
+            telemetry_trigger: None,
+            monkey_hypotheses: Vec::new(),
+            rejected_patches: Vec::new(),
+            final_repaired_code: None,
+            narrative_summary: None,
+            timestamp: 0,
         };
 
-        // Step 1: Extract error context (from interceptor)
-        // Use the actual repair trigger if we have one from interception, otherwise create a basic one
-        let trigger = match repair_trigger.as_ref() {
-            Some(t) => t.clone(),
-            None => {
-                let error_message = "Unknown error during skill execution".to_string();
-                crate::interceptor::interceptor::RepairTrigger {
-                    skill_name: skill_name.clone(),
-                    error_message: error_message.clone(),
-                    error_keywords: crate::interceptor::interceptor::extract_error_keywords(&error_message),
-                    stack_trace: Vec::new(),
-                    memory_snapshot: None,
-                }
-            }
+        // Extract telemetry from repair trigger or create basic telemetry
+        let telemetry = match repair_trigger.as_ref() {
+            Some(t) => t.error_message.clone(),
+            None => "Unknown error during skill execution".to_string(),
         };
 
-        // Step 2: AST diagnosis using the extracted line/column and error keywords from trigger
-        let error_keywords = if let Some(ref trigger) = repair_trigger {
-            &trigger.error_keywords
-        } else {
-            &vec![]
-        };
-        let mut analyzer: tokio::sync::MutexGuard<'_, ASTAnalyzer> = ast_analyzer.lock().await;
-        let diagnosis = match analyzer.diagnose(&skill.code, error_line, error_column, error_keywords) {
-            Ok(d) => d,
-            Err(_) => {
-                return Ok(RepairOutcome {
-                    skill_name: skill.name.clone(),
-                    success: false,
-                    confidence: 0.0,
-                    repair_time_ms: start_time.elapsed().as_millis() as u64,
-                    mutation_applied: None,
-                });
-            }
-        };
+        // Create tribunal actors
+        let wild_monkey = crate::tribunal::WildMonkey;
+        let neutral_judge = crate::tribunal::NeutralJudge;
+        let angry_master = crate::tribunal::AngryMaster;
+        let narrative_agent = crate::tribunal::NarrativeAgent;
 
-        // Step 3: Extract subgraph (token budgeting) - simplified
-        // In a full implementation, we would extract a subgraph based on token budget
-        let _subgraph = diagnosis.slim_nodes.clone();
+        // Phase 4/5: Wild Monkey generates patches based on telemetry
+        let patches = wild_monkey
+            .generate_patches(&mut genome, &telemetry)
+            .await
+            .map_err(|e| crate::error::HephaestusError::Internal(format!(
+                "Wild Monkey failed to generate patches: {}",
+                e
+            )))?;
 
-        // Step 4: 7-phase investigation (with LLM) - simplified
-        let investigation = match Self::run_investigation(&diagnosis, &trigger).await {
-            Ok(inv) => inv,
-            Err(_) => {
-                return Ok(RepairOutcome {
-                    skill_name: skill.name.clone(),
-                    success: false,
-                    confidence: 0.0,
-                    repair_time_ms: start_time.elapsed().as_millis() as u64,
-                    mutation_applied: None,
-                });
-            }
-        };
+        // Phase 6: Neutral Judge executes trials on the patches
+        let trial_results = neutral_judge
+            .execute_trials(patches.clone(), &genome)
+            .await
+            .map_err(|e| crate::error::HephaestusError::Internal(format!(
+                "Neutral Judge failed to execute trials: {}",
+                e
+            )))?;
 
-        // Step 5: Propose mutations - simplified
-        let proposals = match Self::propose_mutations(&diagnosis, &investigation).await {
-            Ok(p) => p,
-            Err(_) => {
-                return Ok(RepairOutcome {
-                    skill_name: skill.name.clone(),
-                    success: false,
-                    confidence: 0.0,
-                    repair_time_ms: start_time.elapsed().as_millis() as u64,
-                    mutation_applied: None,
-                });
-            }
-        };
+        // Also run safeguard inspection (though we don't use the result directly in this flow)
+        let _ = neutral_judge
+            .inspect_safeguards(patches.clone())
+            .await
+            .map_err(|e| crate::error::HephaestusError::Internal(format!(
+                "Neutral Judge failed to inspect safeguards: {}",
+                e
+            )))?;
 
-        let best_mutation = proposals.first().cloned();
+        // Phase 7: Angry Master applies penalties and selects final repair
+        angry_master
+            .apply_penalties(&mut genome, trial_results.clone())
+            .await
+            .map_err(|e| crate::error::HephaestusError::Internal(format!(
+                "Angry Master failed to apply penalties: {}",
+                e
+            )))?;
 
-        // Step 6-8: Sandbox validation → Execute repair
-        let repair_success = if let Some(mutation) = best_mutation.clone() {
-             let sandboxconfig = SandboxConfig {
-                 permission_mode: PermissionMode::AutoRepair,
-                 timeout_ms: 5000,
-                 cwd: std::env::current_dir().unwrap_or_default(),
-                 enable_network: false,
-                 enable_user_namespace: true,
-                 drop_capabilities: true,
-                 danger_mode: false,
-             };
+        // Determine if we have a successful verdict
+        let verdict = genome.final_repaired_code.is_some();
 
-            // Validate in sandbox
-            let validation_result = match Self::validate_in_sandbox(&mutation, &sandboxconfig).await
-            {
-                Ok(v) => v,
-                Err(_e) => {
-                    return Ok(RepairOutcome {
-                        skill_name: skill.name.clone(),
-                        success: false,
-                        confidence: 0.0,
-                        repair_time_ms: start_time.elapsed().as_millis() as u64,
-                        mutation_applied: None,
-                    });
-                }
-            };
+        // Phase 8: Narrative Agent records the verdict
+        narrative_agent
+            .record_verdict(&mut genome, verdict, &telemetry)
+            .await
+            .map_err(|e| crate::error::HephaestusError::Internal(format!(
+                "Narrative Agent failed to record verdict: {}",
+                e
+            )))?;
 
-            if validation_result.success {
-                // Execute repair (apply mutation)
-                // In a full implementation, we would apply the mutation to the skill code
-                // For now, we'll just record that we applied a mutation
-                RepairOutcome {
-                    skill_name: skill.name.clone(),
-                    success: true,
-                    confidence: 0.8, // Placeholder confidence
-                    repair_time_ms: start_time.elapsed().as_millis() as u64,
-                    mutation_applied: Some(mutation),
-                }
-            } else {
-                RepairOutcome {
-                    skill_name: skill.name.clone(),
-                    success: false,
-                    confidence: 0.0,
-                    repair_time_ms: start_time.elapsed().as_millis() as u64,
-                    mutation_applied: None,
-                }
-            }
-        } else {
-            RepairOutcome {
-                skill_name: skill.name.clone(),
-                success: false,
-                confidence: 0.0,
-                repair_time_ms: start_time.elapsed().as_millis() as u64,
-                mutation_applied: None,
-            }
-        };
+        // Update timestamp and compute hash if we have a final repaired code
+        genome.timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
 
-        // Step 9: Store Genome (rusqlite)
-        if let Some(ref mutation) = repair_success.mutation_applied {
-            // In a full implementation, we would store the repair genome
-            // For now, we'll just log that we would store it
-            let skill_name_for_log = skill.name.clone();
-            println!(
-                "Would store repair genome for skill {} with mutation {}",
-                skill_name_for_log, mutation
-            );
+        // In a real implementation, we would compute a proper hash of the genome
+        // For now, we'll use a simple placeholder
+        if !genome.original_code.is_empty() {
+            use std::hash::{Hash, Hasher};
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
+            genome.original_code.hash(&mut hasher);
+            genome.hash = hasher.finish().to_string();
         }
 
-        // Step 10: Emit Completion Event
-        // In a full implementation, we would emit an event via the interceptor's event sender
+        // Store the populated RepairGenome in the genome store
+        {
+            let store = _genome_store.lock().await;
+            store.store_genome(&genome)
+                .map_err(|e| crate::error::HephaestusError::Internal(format!(
+                    "Failed to store genome: {}",
+                    e
+                )))?;
+        }
 
-        Ok(repair_success)
-    }
+        // Determine the outcome based on whether we have a final repaired code
+        let success = genome.final_repaired_code.is_some();
+        let confidence = if success { 0.9 } else { 0.1 };
+        let mutation_applied = genome.final_repaired_code.clone();
 
-    /// Run the 7-phase investigation protocol (simplified)
-    async fn run_investigation(
-        _diagnosis: &crate::ast::analyzer::ASTDiagnosis,
-        _trigger: &crate::interceptor::interceptor::RepairTrigger,
-    ) -> Result<crate::investigation::protocol::InvestigationOutput> {
-        // In a full implementation, this would run the full 7-phase investigation
-        // For now, we'll return a dummy investigation output
-        Ok(crate::investigation::protocol::InvestigationOutput {
-            problem: crate::investigation::protocol::ProblemDefinition {
-                expected_behavior: "Should work".to_string(),
-                observed_behavior: "But failed".to_string(),
-                scope: "Test".to_string(),
-                reproducible: true,
-            },
-            reproduction: crate::investigation::protocol::ReproductionAttempt {
-                method: crate::investigation::protocol::ReproductionMethod::ExistingTest,
-                steps: vec![],
-                observed_result: "Failed".to_string(),
-                consistent: true,
-            },
-            evidence: crate::investigation::protocol::EvidenceCollection {
-                facts: vec![crate::investigation::protocol::Fact {
-                    layer: "Entry".to_string(),
-                    input_value: "test".to_string(),
-                    output_value: "failed".to_string(),
-                    transformed: false,
-                    condition: "error".to_string(),
-                }],
-            },
-            hypothesis: crate::investigation::protocol::Hypothesis {
-                root_cause: "Null pointer".to_string(),
-                evidence: "Stack trace shows crash".to_string(),
-            },
-            guard: crate::investigation::protocol::FailureGuard {
-                guard_type: crate::investigation::protocol::GuardType::AutomatedTest,
-                description: "Test passes before fix".to_string(),
-                passes_before_fix: true,
-                passes_after_fix: false,
-            },
-            fix: crate::investigation::protocol::CodeFix {
-                original_code: "int x = *ptr;".to_string(),
-                fixed_code: "if (ptr) { int x = *ptr; } else { int x = 0; }".to_string(),
-                rationale: "Added null check".to_string(),
-                changes_count: 2,
-            },
-            verification: crate::investigation::protocol::Verification {
-                original_reproduction_still_fails: false,
-                guard_now_passes: true,
-                related_tests_pass: true,
-                side_effects_none: true,
-            },
+        Ok(RepairOutcome {
+            skill_name: skill.name.clone(),
+            success,
+            confidence,
+            repair_time_ms: start_time.elapsed().as_millis() as u64,
+            mutation_applied,
         })
     }
 
-    /// Propose mutations based on diagnosis and investigation (simplified)
-    async fn propose_mutations(
-        __diagnosis: &crate::ast::analyzer::ASTDiagnosis,
-        _investigation: &crate::investigation::protocol::InvestigationOutput,
-    ) -> Result<Vec<String>> {
-        // In a full implementation, this would use an LLM to propose mutations
-        // For now, we'll return a dummy mutation
-        Ok(vec!["if (ptr == nullptr) { return 0; }".to_string()])
-    }
 
-    /// Validate a mutation in the sandbox (simplified)
-    async fn validate_in_sandbox(mutation: &str, config: &SandboxConfig) -> Result<SandboxResult> {
-        // In a full implementation, we would create a test script that applies the mutation and runs tests
-        // For now, we'll just run a simple command to see if the sandbox works
-        let code = format!(
-            r#"
-            echo "Validating mutation: {}"
-            # In a real implementation, we would compile and test the mutated code here
-            exit 0
-            "#,
-            mutation
-        );
-
-        execute_in_sandbox(&code, config)
-            .await
-            .map_err(HephaestusError::Sandbox)
-    }
 }
 
 #[cfg(test)]

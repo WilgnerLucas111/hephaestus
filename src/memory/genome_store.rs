@@ -1,10 +1,11 @@
 use crate::error::{HephaestusError, Result};
 use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Genome store for persisting AST genomes in SQLite.
+/// Genome store for persisting RepairGenomes in SQLite.
 ///
-/// This store provides safe persistence of AST genomes with protection against
+/// This store provides safe persistence of RepairGenomes with protection against
 /// SQL injection and path traversal attacks.
 pub struct GenomeStore {
     connection: Connection,
@@ -17,7 +18,7 @@ impl GenomeStore {
     /// # Arguments
     ///
     /// * `path` - Path where the SQLite database should be stored.
-    ///            Must be a valid, non-empty path without directory traversal sequences.
+    ///   Must be a valid, non-empty path without directory traversal sequences.
     ///
     /// # Returns
     ///
@@ -118,7 +119,7 @@ impl GenomeStore {
             CREATE TABLE IF NOT EXISTS genomes (
                 id INTEGER PRIMARY KEY,
                 hash TEXT NOT NULL UNIQUE,
-                content BLOB NOT NULL,
+                genome_json TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -142,32 +143,31 @@ impl GenomeStore {
     ///
     /// # Arguments
     ///
-    /// * `hash` - Unique identifier for the genome (typically SHA-256 of content)
-    /// * `content` - Genome content to store
+    /// * `genome` - The RepairGenome to store
     ///
     /// # Returns
     ///
     /// * `Ok(())` if genome was stored successfully
     /// * `Err(HephaestusError)` if storage fails or memory limit would be exceeded
-    pub fn store_genome(&self, hash: &str, content: &[u8]) -> Result<()> {
+    pub fn store_genome(&self, genome: &RepairGenome) -> Result<()> {
         // Guard clause: validate input
+        let hash = &genome.hash;
         if hash.is_empty() {
             return Err(HephaestusError::InvalidInput(
                 "Genome hash cannot be empty".to_string(),
             ));
         }
 
-        if content.is_empty() {
-            return Err(HephaestusError::InvalidInput(
-                "Genome content cannot be empty".to_string(),
-            ));
-        }
+        // Serialize the genome to JSON
+        let genome_json = serde_json::to_string(genome)
+            .map_err(HephaestusError::Json)?;
 
         // Check memory limit (45 MiB = 45 * 1024 * 1024 bytes)
         const MAX_SIZE_BYTES: u64 = 45 * 1024 * 1024;
         let current_size = self.get_database_size()?;
+        let json_size = genome_json.len() as u64;
         let new_size = current_size
-            .checked_add(content.len() as u64)
+            .checked_add(json_size)
             .ok_or_else(|| {
                 HephaestusError::InvalidInput("Genome size calculation overflow".to_string())
             })?;
@@ -177,7 +177,7 @@ impl GenomeStore {
                 "Storing this genome would exceed the 45 MiB memory limit. \
                 Current size: {} bytes, Required: {} bytes, Limit: {} bytes",
                 current_size,
-                content.len(),
+                json_size,
                 MAX_SIZE_BYTES
             )));
         }
@@ -185,13 +185,13 @@ impl GenomeStore {
         // Use UPSERT to insert or update genome by hash
         self.connection.execute(
             "
-            INSERT INTO genomes (hash, content, updated_at)
+            INSERT INTO genomes (hash, genome_json, updated_at)
             VALUES (?1, ?2, CURRENT_TIMESTAMP)
             ON CONFLICT(hash) DO UPDATE SET
-                content = excluded.content,
+                genome_json = excluded.genome_json,
                 updated_at = CURRENT_TIMESTAMP
             ",
-            params![hash, content],
+            params![hash, genome_json],
         )?;
 
         Ok(())
@@ -205,10 +205,10 @@ impl GenomeStore {
     ///
     /// # Returns
     ///
-    /// * `Ok(Some(content))` if genome was found
+    /// * `Ok(Some(genome))` if genome was found
     /// * `Ok(None)` if genome was not found
     /// * `Err(HephaestusError)` if retrieval fails
-    pub fn get_genome(&self, hash: &str) -> Result<Option<Vec<u8>>> {
+    pub fn get_genome(&self, hash: &str) -> Result<Option<RepairGenome>> {
         // Guard clause: validate input
         if hash.is_empty() {
             return Err(HephaestusError::InvalidInput(
@@ -218,12 +218,20 @@ impl GenomeStore {
 
         let mut stmt = self
             .connection
-            .prepare("SELECT content FROM genomes WHERE hash = ?1")?;
+            .prepare("SELECT genome_json FROM genomes WHERE hash = ?1")?;
 
-        let mut rows = stmt.query_map(params![hash], |row| row.get::<_, Vec<u8>>(0))?;
+        let mut rows = stmt.query_map(params![hash], |row| row.get::<_, String>(0))?;
 
         // Since hash is unique, we expect at most one row
-        let genome = rows.next().transpose()?;
+        let genome_json = rows.next().transpose()?;
+        let genome = if let Some(json) = genome_json {
+            Some(
+                serde_json::from_str(&json)
+                    .map_err(HephaestusError::Json)?,
+            )
+        } else {
+            None
+        };
 
         Ok(genome)
     }
@@ -272,45 +280,117 @@ impl GenomeStore {
     }
 }
 
+/// The four personalities of the Tribunal architecture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TribunalActor {
+    WildMonkey,
+    NeutralJudge,
+    AngryMaster,
+    NarrativeAgent,
+}
+
+/// A record of a rejected patch during the tribunal process.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RejectionRecord {
+    /// The patch that was rejected
+    pub patch: String,
+    /// The reason for rejection
+    pub reason: String,
+    /// Timestamp of rejection
+    pub timestamp: u64,
+}
+
+/// The complete genome ledger entry, containing all metadata and state
+/// for a code repair attempt.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairGenome {
+    /// Unique hash of the genome (typically SHA-256 of the original code)
+    pub hash: String,
+    /// The original code that needs repair
+    pub original_code: String,
+    /// Telemetry data that triggered the repair attempt
+    pub telemetry_trigger: Option<String>,
+    /// Hypotheses generated by the Wild Monkey actor
+    pub monkey_hypotheses: Vec<String>,
+    /// Patches that were rejected during tribunal trials
+    pub rejected_patches: Vec<RejectionRecord>,
+    /// The final repaired code, if any
+    pub final_repaired_code: Option<String>,
+    /// Narrative summary of the tribunal proceedings
+    pub narrative_summary: Option<String>,
+    /// Timestamp when this genome was last updated
+    pub timestamp: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_genome_store_operations() -> Result<()> {
         // Create temporary directory for test database
         let temp_dir = tempfile::tempdir()?;
         let db_path = std::path::PathBuf::from("test.db");
-        
 
         // Open store
         let store = GenomeStore::open(&db_path)?;
 
+        // Create a test genome
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let genome = RepairGenome {
+            hash: "test_hash_123".to_string(),
+            original_code: "fn main() {};".to_string(),
+            telemetry_trigger: Some("panic: index out of bounds".to_string()),
+            monkey_hypotheses: vec![
+                "fn main() { let x = 0; }".to_string(),
+                "fn main() { let x = 1; }".to_string(),
+            ],
+            rejected_patches: vec![RejectionRecord {
+                patch: "fn main() { let x = 2; }".to_string(),
+                reason: "still panics".to_string(),
+                timestamp: now,
+            }],
+            final_repaired_code: Some("fn main() { let x = 0; }".to_string()),
+            narrative_summary: Some("The Wild Monkey generated two hypotheses. The Neutral Judge found the first hypothesis safe and effective. The Angry Master applied no penalties. The Narrative Agent recorded the verdict.".to_string()),
+            timestamp: now,
+        };
+
         // Test storing a genome
-        let hash = "test_hash_123";
-        let content = b"test genome content";
-        store.store_genome(hash, content)?;
+        store.store_genome(&genome)?;
 
         // Test retrieving the genome
-        let retrieved = store.get_genome(hash)?;
+        let retrieved = store.get_genome(&genome.hash)?;
         assert!(retrieved.is_some(), "Genome should exist");
         if let Some(ref r) = retrieved {
-            assert_eq!(r, &content.to_vec());
+            assert_eq!(r.hash, genome.hash);
+            assert_eq!(r.original_code, genome.original_code);
+            assert_eq!(r.telemetry_trigger, genome.telemetry_trigger);
+            assert_eq!(r.monkey_hypotheses, genome.monkey_hypotheses);
+            assert_eq!(r.rejected_patches, genome.rejected_patches);
+            assert_eq!(r.final_repaired_code, genome.final_repaired_code);
+            assert_eq!(r.narrative_summary, genome.narrative_summary);
+            assert_eq!(r.timestamp, genome.timestamp);
         }
 
         // Test updating the genome
-        let new_content = b"updated genome content";
-        store.store_genome(hash, new_content)?;
-        let updated = store.get_genome(hash)?;
-        assert!(updated.is_some(), "Genome should exist");
-        if let Some(ref u) = updated {
-            assert_eq!(u, &new_content.to_vec());
+        let mut updated_genome = genome.clone();
+        updated_genome.final_repaired_code = Some("fn main() { let x = 42; }".to_string());
+        updated_genome.timestamp = now + 1;
+        store.store_genome(&updated_genome)?;
+        let retrieved_updated = store.get_genome(&genome.hash)?;
+        assert!(retrieved_updated.is_some(), "Genome should exist after update");
+        if let Some(ref r) = retrieved_updated {
+            assert_eq!(r.final_repaired_code, Some("fn main() { let x = 42; }".to_string()));
+            assert_eq!(r.timestamp, now + 1);
         }
 
         // Test deleting the genome
-        store.delete_genome(hash)?;
-        let deleted = store.get_genome(hash)?;
+        store.delete_genome(&genome.hash)?;
+        let deleted = store.get_genome(&genome.hash)?;
         assert!(deleted.is_none(), "Genome should not exist after deletion");
 
         // Clean up
