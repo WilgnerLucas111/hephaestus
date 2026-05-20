@@ -1,15 +1,28 @@
 use crate::error::{HephaestusError, Result};
+use crate::memory::evo_genome::{AAKEncoder, SemanticClusterer, WingManager};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// Genome store for persisting RepairGenomes in SQLite.
 ///
 /// This store provides safe persistence of RepairGenomes with protection against
 /// SQL injection and path traversal attacks.
+/// 
+/// In Phase 9 (Evo-Genome), this store also implements:
+/// - Semantic clustering of failures using Leiden clustering (via Graphify placeholder)
+/// - Wing-based organization in the MemPalace (WingOfConcurrency, WingOfMemory, etc.)
+/// - AAAK compression for high-density storage of repair solutions
 pub struct GenomeStore {
     connection: Connection,
     db_path: PathBuf,
+    /// Semantic clusterer for grouping similar failures
+    semantic_clusterer: Mutex<SemanticClusterer>,
+    /// Wing manager for organizing knowledge in the MemPalace
+    wing_manager: Mutex<WingManager>,
+    /// AAAK encoder for high-density storage
+    aaak_encoder: Mutex<AAKEncoder>,
 }
 
 impl GenomeStore {
@@ -42,6 +55,9 @@ impl GenomeStore {
         Ok(GenomeStore {
             connection,
             db_path,
+            semantic_clusterer: Mutex::new(SemanticClusterer::new()),
+            wing_manager: Mutex::new(WingManager::new()),
+            aaak_encoder: Mutex::new(AAKEncoder::new()),
         })
     }
 
@@ -141,6 +157,11 @@ impl GenomeStore {
     /// Uses UPSERT pattern to insert new genomes or update existing ones by hash.
     /// Enforces the 45 MiB memory limit by checking database size before insertion.
     ///
+    /// In Phase 9, this method also applies Evo-Genome enhancements:
+    /// - Assigns semantic clusters using Leiden clustering (via Graphify placeholder)
+    /// - Assigns wings in the MemPalace (WingOfConcurrency, WingOfMemory, etc.)
+    /// - Encodes repair solutions using AAAK for high-density storage
+    ///
     /// # Arguments
     ///
     /// * `genome` - The RepairGenome to store
@@ -149,7 +170,7 @@ impl GenomeStore {
     ///
     /// * `Ok(())` if genome was stored successfully
     /// * `Err(HephaestusError)` if storage fails or memory limit would be exceeded
-    pub fn store_genome(&self, genome: &RepairGenome) -> Result<()> {
+    pub fn store_genome(&self, genome: &mut RepairGenome) -> Result<()> {
         // Guard clause: validate input
         let hash = &genome.hash;
         if hash.is_empty() {
@@ -158,8 +179,54 @@ impl GenomeStore {
             ));
         }
 
-        // Serialize the genome to JSON
-        let genome_json = serde_json::to_string(genome)
+        // Apply Evo-Genome enhancements before storage
+        // 1. Assign semantic cluster (using simple hash-based clustering as placeholder for Leiden)
+        if genome.semantic_cluster.is_none() {
+            genome.semantic_cluster = {
+                let mut clusterer = self.semantic_clusterer.lock().unwrap();
+                Some(clusterer.assign_cluster(genome))
+            };
+        }
+
+        // 2. Assign wing in MemPalace
+        if genome.wing.is_none() {
+            genome.wing = {
+                let mut wing_manager = self.wing_manager.lock().unwrap();
+                Some(wing_manager.assign_wing(genome))
+            };
+        }
+
+        // 3. Encode final repaired code using AAAK (if present)
+        if let Some(ref mut repaired_code) = genome.final_repaired_code {
+            // Only encode if we haven't already done so (aaak_compressed is None)
+            if genome.aaak_compressed.is_none() {
+                let encoder = self.aaak_encoder.lock().unwrap();
+                genome.aaak_compressed = Some(encoder.encode(repaired_code.as_bytes()));
+                // In a full implementation, we would store the compressed version and keep
+                // the original for readability. For now, we'll keep both.
+            }
+        }
+
+        // Calculate dependency density (placeholder - in future would use actual AST analysis)
+        if genome.dependency_density.is_none() {
+            // Simple heuristic: more functions/methods might indicate higher dependency density
+            let dep_density = genome.original_code.matches("fn ").count() as f64 * 0.1
+                + genome.original_code.matches("struct ").count() as f64 * 0.2
+                + genome.original_code.matches("impl ").count() as f64 * 0.3;
+            genome.dependency_density = Some(dep_density.min(1.0)); // Cap at 1.0
+        }
+
+        // Calculate AST topology hash (placeholder - in future would use actual AST hashing)
+        if genome.ast_topology_hash.is_none() {
+            // Simple hash of the original code as placeholder
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            genome.original_code.hash(&mut hasher);
+            genome.ast_topology_hash = Some(hasher.finish());
+        }
+
+        // Serialize the enhanced genome to JSON
+        let genome_json = serde_json::to_string(&genome)
             .map_err(HephaestusError::Json)?;
 
         // Check memory limit (45 MiB = 45 * 1024 * 1024 bytes)
@@ -320,6 +387,16 @@ pub struct RepairGenome {
     pub narrative_summary: Option<String>,
     /// Timestamp when this genome was last updated
     pub timestamp: u64,
+    /// Simple semantic cluster ID for grouping similar failures (placeholder for Leiden clustering)
+    pub semantic_cluster: Option<u64>,
+    /// Wing assignment in the MemPalace (e.g., "WingOfConcurrency", "WingOfMemory")
+    pub wing: Option<String>,
+    /// Placeholder for AAAK compressed representation (for future high-density storage)
+    pub aaak_compressed: Option<Vec<u8>>,
+    /// Simple dependency density measure (placeholder for future enhancement)
+    pub dependency_density: Option<f64>,
+    /// Simple AST topology hash (placeholder for future enhancement)
+    pub ast_topology_hash: Option<u64>,
 }
 
 #[cfg(test)]
@@ -357,10 +434,15 @@ mod tests {
             final_repaired_code: Some("fn main() { let x = 0; }".to_string()),
             narrative_summary: Some("The Wild Monkey generated two hypotheses. The Neutral Judge found the first hypothesis safe and effective. The Angry Master applied no penalties. The Narrative Agent recorded the verdict.".to_string()),
             timestamp: now,
+            semantic_cluster: Some(1),
+            wing: Some("WingOfPanics".to_string()),
+            aaak_compressed: Some(vec![1, 2, 3]),
+            dependency_density: Some(0.5),
+            ast_topology_hash: Some(12345),
         };
 
         // Test storing a genome
-        store.store_genome(&genome)?;
+        store.store_genome(&mut genome.clone())?;
 
         // Test retrieving the genome
         let retrieved = store.get_genome(&genome.hash)?;
@@ -374,18 +456,27 @@ mod tests {
             assert_eq!(r.final_repaired_code, genome.final_repaired_code);
             assert_eq!(r.narrative_summary, genome.narrative_summary);
             assert_eq!(r.timestamp, genome.timestamp);
+            assert_eq!(r.semantic_cluster, genome.semantic_cluster);
+            assert_eq!(r.wing, genome.wing);
+            assert_eq!(r.aaak_compressed, genome.aaak_compressed);
+            assert_eq!(r.dependency_density, genome.dependency_density);
+            assert_eq!(r.ast_topology_hash, genome.ast_topology_hash);
         }
 
         // Test updating the genome
         let mut updated_genome = genome.clone();
         updated_genome.final_repaired_code = Some("fn main() { let x = 42; }".to_string());
         updated_genome.timestamp = now + 1;
-        store.store_genome(&updated_genome)?;
+        updated_genome.semantic_cluster = Some(2);
+        updated_genome.wing = Some("WingOfMemory".to_string());
+        store.store_genome(&mut updated_genome)?;
         let retrieved_updated = store.get_genome(&genome.hash)?;
         assert!(retrieved_updated.is_some(), "Genome should exist after update");
         if let Some(ref r) = retrieved_updated {
             assert_eq!(r.final_repaired_code, Some("fn main() { let x = 42; }".to_string()));
             assert_eq!(r.timestamp, now + 1);
+            assert_eq!(r.semantic_cluster, Some(2));
+            assert_eq!(r.wing, Some("WingOfMemory".to_string()));
         }
 
         // Test deleting the genome

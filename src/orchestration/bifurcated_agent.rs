@@ -160,17 +160,22 @@ impl BifurcatedAgent {
         let _permit = repair_semaphore.acquire().await;
         let _skill_name = skill.name.clone();
 
-        // Initialize an empty RepairGenome (Ledger)
-        let mut genome = crate::memory::genome_store::RepairGenome {
-            hash: "".to_string(), // Will be computed later if needed
-            original_code: skill.code.clone(),
-            telemetry_trigger: None,
-            monkey_hypotheses: Vec::new(),
-            rejected_patches: Vec::new(),
-            final_repaired_code: None,
-            narrative_summary: None,
-            timestamp: 0,
-        };
+          // Initialize an empty RepairGenome (Ledger)
+          let mut genome = crate::memory::genome_store::RepairGenome {
+              hash: "".to_string(), // Will be computed later if needed
+              original_code: skill.code.clone(),
+              telemetry_trigger: None,
+              monkey_hypotheses: Vec::new(),
+              rejected_patches: Vec::new(),
+              final_repaired_code: None,
+              narrative_summary: None,
+              timestamp: 0,
+              semantic_cluster: None,
+              wing: None,
+              aaak_compressed: None,
+              dependency_density: None,
+              ast_topology_hash: None,
+          };
 
         // Extract telemetry from repair trigger or create basic telemetry
         let telemetry = match repair_trigger.as_ref() {
@@ -251,7 +256,7 @@ impl BifurcatedAgent {
         // Store the populated RepairGenome in the genome store
         {
             let store = _genome_store.lock().await;
-            store.store_genome(&genome)
+            store.store_genome(&mut genome)
                 .map_err(|e| crate::error::HephaestusError::Internal(format!(
                     "Failed to store genome: {}",
                     e
