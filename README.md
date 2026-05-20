@@ -28,7 +28,7 @@ At its core, Hephaestus does not use external runtimes or polyglot microservices
     * *Hypothesis Formulation*
     * *Sandbox Validation (Zero-Trust Mutation)*
     * *Repair Execution & Fallbacks*
-    * *Storing the "Repair Genome" locally via SQLite*
+    * *Storing the "Repair Genome" locally via SQLite with Evo-Genome enhancements (semantic clustering, wing-based organization, AAAK compression)
 
 ## 📦 Installation
 
