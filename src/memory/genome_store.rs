@@ -399,6 +399,28 @@ pub struct RepairGenome {
     pub ast_topology_hash: Option<u64>,
 }
 
+    /// Retrieves all successful genomes (those with a final repaired code).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(vec)` - Vector of successful RepairGenomes
+    /// * `Err(HephaestusError)` if the query fails
+    pub fn get_successful_genomes(&self) -> Result<Vec<RepairGenome>> {
+        let mut stmt = self
+            .connection
+            .prepare("SELECT genome_json FROM genomes WHERE final_repaired_code IS NOT NULL")?;
+
+        let mut rows = stmt.query_map(params![], |row| row.get::<_, String>(0))?;
+
+        let mut genomes = Vec::new();
+        while let Some(genome_json) = rows.next()? {
+            let genome: RepairGenome = serde_json::from_str(&genome_json)
+                .map_err(HephaestusError::Json)?;
+            genomes.push(genome);
+        }
+
+        Ok(genomes)
+    }
 #[cfg(test)]
 mod tests {
     use super::*;

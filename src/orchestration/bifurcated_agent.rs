@@ -191,7 +191,7 @@ impl BifurcatedAgent {
 
         // Phase 4/5: Wild Monkey generates patches based on telemetry
         let patches = wild_monkey
-            .generate_patches(&mut genome, &telemetry)
+            .generate_patches(&mut genome, &telemetry, &_genome_store)
             .await
             .map_err(|e| crate::error::HephaestusError::Internal(format!(
                 "Wild Monkey failed to generate patches: {}",
