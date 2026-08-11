@@ -31,6 +31,8 @@ pub struct ValidationReport {
     pub compiled: bool,
     pub clippy_passed: bool,
     pub tests_passed: bool,
+    pub unsafe_free: bool,
+    pub line_budget_ok: bool,
     pub duration_ms: u64,
     pub stdout: String,
     pub stderr: String,
@@ -249,6 +251,8 @@ impl ProjectRepairEngine {
             compiled,
             clippy_passed,
             tests_passed: test_success,
+            unsafe_free,
+            line_budget_ok,
             duration_ms: val_start.elapsed().as_millis() as u64,
             stdout: post_patch_test_report.stdout.clone(),
             stderr: post_patch_test_report.stderr.clone(),
@@ -353,18 +357,29 @@ pub fn generate_unified_diff_pub(old_text: &str, new_text: &str, file_path: &Pat
 }
 
 fn generate_unified_diff(old_text: &str, new_text: &str, file_path: &Path) -> String {
-    let diff = similar::TextDiff::from_lines(old_text, new_text);
-    let mut output = String::new();
-    output.push_str(&format!("--- a/{}\n", file_path.display()));
-    output.push_str(&format!("+++ b/{}\n", file_path.display()));
+    similar::TextDiff::from_lines(old_text, new_text)
+        .unified_diff()
+        .header(
+            &format!("a/{}", file_path.display()),
+            &format!("b/{}", file_path.display()),
+        )
+        .to_string()
+}
 
-    for change in diff.iter_all_changes() {
-        let sign = match change.tag() {
-            similar::ChangeTag::Delete => "-",
-            similar::ChangeTag::Insert => "+",
-            similar::ChangeTag::Equal => " ",
-        };
-        output.push_str(&format!("{}{}", sign, change));
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unified_diff_hunks() {
+        let old = "fn main() {\n    let v = vec![1, 2];\n    let _ = v[5];\n}\n";
+        let new = "fn main() {\n    let v = vec![1, 2];\n    let _ = v.get(5).copied();\n}\n";
+        let diff = generate_unified_diff(old, new, Path::new("src/main.rs"));
+
+        assert!(diff.contains("--- a/src/main.rs"));
+        assert!(diff.contains("+++ b/src/main.rs"));
+        assert!(diff.contains("@@"));
+        assert!(diff.contains("-    let _ = v[5];"));
+        assert!(diff.contains("+    let _ = v.get(5).copied();"));
     }
-    output
 }

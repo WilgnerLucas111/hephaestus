@@ -319,4 +319,24 @@ mod tests {
         assert!(result.interrupted, "Execution should have timed out");
         assert!(!result.success);
     }
+
+    #[tokio::test]
+    async fn test_environment_allowlist_filtering() {
+        unsafe {
+            std::env::set_var("HEPHAESTUS_TEST_ALLOWED", "ALLOWED_VAL");
+            std::env::set_var("HEPHAESTUS_TEST_FORBIDDEN_TOKEN", "SECRET_TOKEN_VAL");
+        }
+
+        let cwd = std::env::current_dir().unwrap();
+        let mut req = ExecutionRequest::new("env", cwd.to_str().unwrap());
+        req.environment_allowlist = vec!["HEPHAESTUS_TEST_ALLOWED".to_string()];
+
+        let result = execute_request(&req).await.unwrap();
+        assert!(
+            result
+                .stdout
+                .contains("HEPHAESTUS_TEST_ALLOWED=ALLOWED_VAL")
+        );
+        assert!(!result.stdout.contains("HEPHAESTUS_TEST_FORBIDDEN_TOKEN"));
+    }
 }
