@@ -77,7 +77,10 @@ impl ProjectRepairEngine {
         extra_args: &[&str],
         timeout_secs: u64,
     ) -> Result<crate::sandbox::executor::SandboxResult> {
-        let mut args = vec![subcommand.to_string(), "--offline".to_string()];
+        let mut args = vec![subcommand.to_string()];
+        if std::env::var("HEPHAESTUS_OFFLINE").is_ok() {
+            args.push("--offline".to_string());
+        }
         for arg in extra_args {
             args.push(arg.to_string());
         }
@@ -89,6 +92,7 @@ impl ProjectRepairEngine {
             timeout: Duration::from_secs(timeout_secs),
             environment_allowlist: vec![
                 "PATH".to_string(),
+                "CARGO_HOME".to_string(),
                 "RUST_LOG".to_string(),
                 "RUST_BACKTRACE".to_string(),
                 "TERM".to_string(),
