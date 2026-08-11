@@ -24,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let mut i = 2;
             while i < args.len() {
+                #[allow(clippy::collapsible_match)]
                 match args[i].as_str() {
                     "--project" | "-p" => {
                         if i + 1 < args.len() {
