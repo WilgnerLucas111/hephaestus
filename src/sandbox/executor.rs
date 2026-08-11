@@ -36,9 +36,9 @@ pub struct ResourceLimits {
 impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
-            max_memory_bytes: Some(512 * 1024 * 1024),   // 512MB
-            max_file_size_bytes: Some(50 * 1024 * 1024), // 50MB
-            max_processes: Some(32),
+            max_memory_bytes: Some(2 * 1024 * 1024 * 1024), // 2GB
+            max_file_size_bytes: Some(1024 * 1024 * 1024),  // 1GB
+            max_processes: None,
         }
     }
 }
@@ -167,10 +167,37 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
         }
     }
 
-    // Set process group in pre_exec for group termination on timeout
+    let mem_limit = request.resource_limits.max_memory_bytes;
+    let file_limit = request.resource_limits.max_file_size_bytes;
+    let proc_limit = request.resource_limits.max_processes;
+
+    // Set process group and setrlimit resource limits in pre_exec
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             let _ = libc::setpgid(0, 0);
+
+            if let Some(mem) = mem_limit {
+                let rlim = libc::rlimit {
+                    rlim_cur: mem,
+                    rlim_max: mem,
+                };
+                let _ = libc::setrlimit(libc::RLIMIT_AS, &rlim);
+            }
+            if let Some(file_size) = file_limit {
+                let rlim = libc::rlimit {
+                    rlim_cur: file_size,
+                    rlim_max: file_size,
+                };
+                let _ = libc::setrlimit(libc::RLIMIT_FSIZE, &rlim);
+            }
+            if let Some(procs) = proc_limit {
+                let rlim = libc::rlimit {
+                    rlim_cur: procs as u64,
+                    rlim_max: procs as u64,
+                };
+                let _ = libc::setrlimit(libc::RLIMIT_NPROC, &rlim);
+            }
+
             Ok(())
         });
     }

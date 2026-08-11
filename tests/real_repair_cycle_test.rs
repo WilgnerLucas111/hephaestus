@@ -81,7 +81,13 @@ mod tests {
 
     let validation = result.validation.expect("Should produce validation report");
     assert!(validation.compiled, "Patched code should compile");
+    assert!(validation.clippy_passed, "Patched code must pass clippy");
     assert!(validation.tests_passed, "Patched code tests should pass");
+    assert!(
+        validation.unsafe_free,
+        "Patch must be free of unsafe blocks"
+    );
+    assert!(validation.line_budget_ok, "Patch must satisfy line budget");
 
     // 5. Verify genome persistence in SQLite
     {
