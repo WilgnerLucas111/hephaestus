@@ -113,11 +113,11 @@ impl ProjectRepairEngine {
             .map_err(|e| HephaestusError::Internal(format!("Sandbox execution error: {}", e)))
     }
 
-    /// Executes `cargo test --offline` in sandbox and captures failure details if any.
+    /// Executes `cargo test` in sandbox and captures failure details if any.
     pub async fn run_cargo_test(project_dir: &Path) -> Result<(bool, FailureReport)> {
         let start = Instant::now();
         let res =
-            Self::run_sandboxed_cargo(project_dir, "test", &["--", "--nocapture"], 15).await?;
+            Self::run_sandboxed_cargo(project_dir, "test", &["--", "--nocapture"], 60).await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let failing_test = parse_failing_test_name(&res.stdout, &res.stderr);
@@ -229,10 +229,10 @@ impl ProjectRepairEngine {
 
         // Phase 6: Sandboxed Empirical Validation (cargo check, clippy, cargo test)
         let val_start = Instant::now();
-        let check_res = Self::run_sandboxed_cargo(temp_workspace, "check", &[], 15).await?;
+        let check_res = Self::run_sandboxed_cargo(temp_workspace, "check", &[], 60).await?;
         let compiled = check_res.success;
 
-        let clippy_res = Self::run_sandboxed_cargo(temp_workspace, "clippy", &[], 15).await?;
+        let clippy_res = Self::run_sandboxed_cargo(temp_workspace, "clippy", &[], 60).await?;
         let clippy_passed = clippy_res.success;
 
         let (test_success, post_patch_test_report) = Self::run_cargo_test(temp_workspace).await?;
