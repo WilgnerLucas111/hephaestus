@@ -35,10 +35,35 @@ pub struct ResourceLimits {
 
 impl Default for ResourceLimits {
     fn default() -> Self {
+        Self::compilation_profile()
+    }
+}
+
+impl ResourceLimits {
+    /// Resource limit profile suitable for heavy Rust compilation (rustc/cargo)
+    pub fn compilation_profile() -> Self {
         Self {
             max_memory_bytes: Some(2 * 1024 * 1024 * 1024), // 2GB
             max_file_size_bytes: Some(1024 * 1024 * 1024),  // 1GB
             max_processes: None,
+        }
+    }
+
+    /// Resource limit profile suitable for running test suites
+    pub fn test_execution_profile() -> Self {
+        Self {
+            max_memory_bytes: Some(512 * 1024 * 1024),    // 512MB
+            max_file_size_bytes: Some(100 * 1024 * 1024), // 100MB
+            max_processes: Some(128),
+        }
+    }
+
+    /// Strict resource limit profile suitable for untrusted candidate execution
+    pub fn strict_sandbox_profile() -> Self {
+        Self {
+            max_memory_bytes: Some(256 * 1024 * 1024),   // 256MB
+            max_file_size_bytes: Some(20 * 1024 * 1024), // 20MB
+            max_processes: Some(32),
         }
     }
 }
@@ -174,28 +199,45 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
     // Set process group and setrlimit resource limits in pre_exec
     unsafe {
         cmd.pre_exec(move || {
-            let _ = libc::setpgid(0, 0);
+            let pg_res = libc::setpgid(0, 0);
+            if pg_res != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::EPERM)
+                    && err.raw_os_error() != Some(libc::EACCES)
+                {
+                    return Err(err);
+                }
+            }
 
             if let Some(mem) = mem_limit {
                 let rlim = libc::rlimit {
                     rlim_cur: mem,
                     rlim_max: mem,
                 };
-                let _ = libc::setrlimit(libc::RLIMIT_AS, &rlim);
+                if libc::setrlimit(libc::RLIMIT_AS, &rlim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
             if let Some(file_size) = file_limit {
                 let rlim = libc::rlimit {
                     rlim_cur: file_size,
                     rlim_max: file_size,
                 };
-                let _ = libc::setrlimit(libc::RLIMIT_FSIZE, &rlim);
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &rlim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
             }
             if let Some(procs) = proc_limit {
                 let rlim = libc::rlimit {
                     rlim_cur: procs as u64,
                     rlim_max: procs as u64,
                 };
-                let _ = libc::setrlimit(libc::RLIMIT_NPROC, &rlim);
+                if libc::setrlimit(libc::RLIMIT_NPROC, &rlim) != 0 {
+                    let err = std::io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EPERM) {
+                        return Err(err);
+                    }
+                }
             }
 
             Ok(())
@@ -373,5 +415,23 @@ mod tests {
                 .contains("HEPHAESTUS_TEST_ALLOWED=ALLOWED_VAL")
         );
         assert!(!result.stdout.contains("HEPHAESTUS_TEST_FORBIDDEN_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn test_file_size_limit_enforcement() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let target_file = temp_dir.path().join("overflow.txt");
+        let script = format!("head -c 1000000 /dev/zero > {}", target_file.display());
+
+        let mut req = ExecutionRequest::new("sh", temp_dir.path().to_str().unwrap());
+        req.args = vec!["-c".to_string(), script];
+        req.environment_allowlist = vec!["PATH".to_string()];
+        req.resource_limits.max_file_size_bytes = Some(1024); // Strict 1KB limit
+
+        let result = execute_request(&req).await.unwrap();
+        assert!(
+            !result.success,
+            "Writing beyond RLIMIT_FSIZE file limit should fail"
+        );
     }
 }
