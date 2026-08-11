@@ -173,15 +173,28 @@ impl ProjectRepairEngine {
             ));
         }
 
-        // Step 3: Read target file & generate patch
+        // Step 3: Read target file & validate path is within workspace boundaries
         let target_file_full = temp_workspace.join(target_file_rel_path);
-        let original_code = fs::read_to_string(&target_file_full)?;
+        let canonical_target = target_file_full.canonicalize().map_err(|e| {
+            HephaestusError::InvalidInput(format!("Invalid target file path: {}", e))
+        })?;
+        let canonical_workspace = temp_workspace
+            .canonicalize()
+            .map_err(|e| HephaestusError::InvalidInput(format!("Invalid workspace path: {}", e)))?;
+
+        if !canonical_target.starts_with(&canonical_workspace) {
+            return Err(HephaestusError::InvalidInput(
+                "Target file path escapes workspace boundaries".to_string(),
+            ));
+        }
+
+        let original_code = fs::read_to_string(&canonical_target)?;
 
         let patch_candidate =
             Self::generate_patch_candidate(&original_code, target_file_rel_path, &failure_report)?;
 
         // Step 4: Apply patch to workspace copy only
-        fs::write(&target_file_full, &patch_candidate.patched_file_content)?;
+        fs::write(&canonical_target, &patch_candidate.patched_file_content)?;
 
         // Step 5: Validate patch with cargo check, clippy, cargo test
         let val_start = Instant::now();
@@ -211,7 +224,7 @@ impl ProjectRepairEngine {
             stderr: post_patch_test_report.stderr.clone(),
         };
 
-        let overall_success = compiled && test_success;
+        let overall_success = compiled && clippy_passed && test_success;
         let unified_diff = Some(patch_candidate.diff.clone());
 
         // Step 6: Compute hash & store RepairGenome in SQLite

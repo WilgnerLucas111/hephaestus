@@ -68,7 +68,7 @@ impl ProblemDefinition {
         // Hard gate: Must be one sentence
         let combined = format!(
             "{} but got {}",
-            &self.expected_behavior, &self.observed_behavior
+            self.expected_behavior, self.observed_behavior
         );
 
         if combined.split('.').filter(|s| !s.trim().is_empty()).count() > 1 {
