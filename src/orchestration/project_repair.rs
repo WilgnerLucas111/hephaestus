@@ -382,4 +382,36 @@ mod tests {
         assert!(diff.contains("-    let _ = v[5];"));
         assert!(diff.contains("+    let _ = v.get(5).copied();"));
     }
+
+    #[tokio::test]
+    async fn test_git_apply_diff() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let temp_dir = tempfile::tempdir()?;
+        let file_path = temp_dir.path().join("lib.rs");
+        let old_content = "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+        let new_content = "pub fn add(a: i32, b: i32) -> i32 {\n    a.saturating_add(b)\n}\n";
+        fs::write(&file_path, old_content)?;
+
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(temp_dir.path())
+            .output()?;
+
+        let diff = generate_unified_diff(old_content, new_content, Path::new("lib.rs"));
+
+        let diff_file = temp_dir.path().join("patch.diff");
+        fs::write(&diff_file, &diff)?;
+
+        let status = std::process::Command::new("git")
+            .arg("apply")
+            .arg("--check")
+            .arg("patch.diff")
+            .current_dir(temp_dir.path())
+            .status()?;
+
+        assert!(
+            status.success(),
+            "Git apply --check should accept the generated unified diff"
+        );
+        Ok(())
+    }
 }

@@ -1,51 +1,44 @@
+use clap::{Parser, Subcommand};
 use hephaestus::memory::genome_store::GenomeStore;
 use hephaestus::orchestration::project_repair::ProjectRepairEngine;
-use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+#[derive(Parser)]
+#[command(
+    name = "hephaestus",
+    about = "Self-Repair Framework for Rust Projects",
+    version = "0.1.0"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Execute an end-to-end sandboxed repair cycle on a target Rust project
+    Repair {
+        /// Path to the Rust project root
+        #[arg(short, long, default_value = ".")]
+        project: PathBuf,
+
+        /// Relative path to the target source file
+        #[arg(short, long, default_value = "src/lib.rs")]
+        target: PathBuf,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
     println!("⚡ Hephaestus: Self-Repair Framework for Rust Projects");
     println!("========================================================\n");
 
-    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
-        print_usage();
-        return Ok(());
-    }
-
-    match args[1].as_str() {
-        "repair" => {
-            let mut project_path = None;
-            let mut target_file = None;
-
-            let mut i = 2;
-            while i < args.len() {
-                #[allow(clippy::collapsible_match)]
-                match args[i].as_str() {
-                    "--project" | "-p" => {
-                        if i + 1 < args.len() {
-                            project_path = Some(PathBuf::from(&args[i + 1]));
-                            i += 1;
-                        }
-                    }
-                    "--target" | "-t" => {
-                        if i + 1 < args.len() {
-                            target_file = Some(PathBuf::from(&args[i + 1]));
-                            i += 1;
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-
-            let project = project_path.unwrap_or_else(|| PathBuf::from("."));
-            let target = target_file.unwrap_or_else(|| PathBuf::from("src/lib.rs"));
-
+    match cli.command {
+        Commands::Repair { project, target } => {
             println!("📁 Target Project: {}", project.display());
             println!("📄 Target File:    {}", target.display());
             println!("🔒 Isolation Mode: Sandboxed Temp Workspace");
@@ -138,21 +131,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        _ => {
-            print_usage();
-        }
     }
 
     Ok(())
-}
-
-fn print_usage() {
-    println!("Usage:");
-    println!("  hephaestus repair --project <PATH> --target <REL_PATH>");
-    println!("\nOptions:");
-    println!("  --project, -p <PATH>     Path to the Rust project root (default: .)");
-    println!(
-        "  --target,  -t <REL_PATH> Relative path to the target source file (default: src/lib.rs)"
-    );
-    println!("  --help,    -h            Show this help message");
 }

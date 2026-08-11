@@ -20,3 +20,4 @@ libc = "0.2"
 futures = "0.3.32"
 flate2 = "1.1.9"
 similar = "2.4"
+clap = { version = "4.4", features = ["derive"] }

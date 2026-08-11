@@ -133,8 +133,16 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
         ));
     }
 
+    let mut args = request.args.clone();
+    if request.network_policy == NetworkPolicy::Disabled
+        && request.program.to_string_lossy().contains("cargo")
+        && !args.contains(&"--offline".to_string())
+    {
+        args.insert(0, "--offline".to_string());
+    }
+
     let mut cmd = TokioCommand::new(&request.program);
-    cmd.args(&request.args)
+    cmd.args(&args)
         .current_dir(&request.working_directory)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
