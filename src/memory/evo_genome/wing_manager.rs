@@ -8,6 +8,12 @@ pub struct WingManager {
     wings: HashMap<String, Vec<String>>,
 }
 
+impl Default for WingManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WingManager {
     /// Create a new WingManager.
     pub fn new() -> Self {
@@ -38,7 +44,10 @@ impl WingManager {
         };
 
         // Add the genome hash to the wing's list
-        self.wings.entry(wing.clone()).or_insert_with(Vec::new).push(genome.hash.clone());
+        self.wings
+            .entry(wing.clone())
+            .or_default()
+            .push(genome.hash.clone());
 
         wing
     }

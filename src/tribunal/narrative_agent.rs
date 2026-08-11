@@ -41,10 +41,7 @@ impl NarrativeAgent {
                 .unwrap_or(0)
         ));
 
-        summary_parts.push(format!(
-            "Telemetry trigger: {}",
-            telemetry_trigger
-        ));
+        summary_parts.push(format!("Telemetry trigger: {}", telemetry_trigger));
 
         if !genome.monkey_hypotheses.is_empty() {
             summary_parts.push(format!(
@@ -85,13 +82,16 @@ impl NarrativeAgent {
                 ));
             }
             (None, false) => {
-                summary_parts.push("Angry Master found no viable repair after tribunal review.".to_string());
+                summary_parts
+                    .push("Angry Master found no viable repair after tribunal review.".to_string());
             }
             (Some(_), false) => {
-                summary_parts.push("Angry Master found code but tribunal vetoed the repair.".to_string());
+                summary_parts
+                    .push("Angry Master found code but tribunal vetoed the repair.".to_string());
             }
             (None, true) => {
-                summary_parts.push("Inconsistent state: verdict true but no code produced.".to_string());
+                summary_parts
+                    .push("Inconsistent state: verdict true but no code produced.".to_string());
             }
         }
 

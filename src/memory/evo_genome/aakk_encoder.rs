@@ -1,11 +1,17 @@
-use flate2::{Compression, write::ZlibEncoder, read::ZlibDecoder};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
 use std::io::{Read, Write};
 
 /// AAK Encoder for high-density storage of repair solutions.
 /// This implements a placeholder for the AAAK dialect using zlib compression.
-/// In the future, this will be replaced by the actual AAAK dialect which would 
+/// In the future, this will be replaced by the actual AAAK dialect which would
 /// provide domain-specific compression (30x as mentioned in the blueprint).
 pub struct AAKEncoder;
+
+impl Default for AAKEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl AAKEncoder {
     /// Create a new AAKEncoder.
@@ -26,7 +32,9 @@ impl AAKEncoder {
     pub fn decode(&self, encoded: &[u8]) -> Vec<u8> {
         let mut decoder = ZlibDecoder::new(encoded);
         let mut decoded = Vec::new();
-        decoder.read_to_end(&mut decoded).expect("Failed to decode data");
+        decoder
+            .read_to_end(&mut decoded)
+            .expect("Failed to decode data");
         decoded
     }
 }

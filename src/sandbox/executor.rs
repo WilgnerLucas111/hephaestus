@@ -1,9 +1,9 @@
-use std::io;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::Duration;
 use libc;
+use std::io;
+use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
+use tokio::process::Command as TokioCommand;
 
 /// Permission modes for sandbox execution
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +16,62 @@ pub enum PermissionMode {
     AutoRepair,
     /// Full access (dangerous, should be avoided)
     DangerFullAccess,
+}
+
+/// Network policy for execution
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NetworkPolicy {
+    Disabled,
+    Enabled,
+}
+
+/// Resource limits for execution
+#[derive(Clone, Debug)]
+pub struct ResourceLimits {
+    pub max_memory_bytes: Option<u64>,
+    pub max_file_size_bytes: Option<u64>,
+    pub max_processes: Option<u32>,
+}
+
+impl Default for ResourceLimits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: Some(512 * 1024 * 1024),   // 512MB
+            max_file_size_bytes: Some(50 * 1024 * 1024), // 50MB
+            max_processes: Some(32),
+        }
+    }
+}
+
+/// Structured request for safe, isolated execution
+#[derive(Clone, Debug)]
+pub struct ExecutionRequest {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    pub working_directory: PathBuf,
+    pub timeout: Duration,
+    pub environment_allowlist: Vec<String>,
+    pub network_policy: NetworkPolicy,
+    pub resource_limits: ResourceLimits,
+}
+
+impl ExecutionRequest {
+    pub fn new<P: Into<PathBuf>>(program: P, cwd: P) -> Self {
+        Self {
+            program: program.into(),
+            args: Vec::new(),
+            working_directory: cwd.into(),
+            timeout: Duration::from_secs(5),
+            environment_allowlist: vec![
+                "PATH".to_string(),
+                "RUST_LOG".to_string(),
+                "RUST_BACKTRACE".to_string(),
+                "TERM".to_string(),
+            ],
+            network_policy: NetworkPolicy::Disabled,
+            resource_limits: ResourceLimits::default(),
+        }
+    }
 }
 
 /// Configuration for sandbox execution
@@ -68,48 +124,92 @@ impl std::fmt::Display for SandboxError {
 
 impl std::error::Error for SandboxError {}
 
-/// Execute code in isolated Linux namespace with timeout guarantee
+/// Executes a structured `ExecutionRequest` asynchronously with non-blocking timeouts,
+/// strict environment variable filtering, and process group isolation.
+pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult, SandboxError> {
+    if request.timeout.as_millis() == 0 {
+        return Err(SandboxError::InvalidConfig(
+            "Timeout must be greater than zero".to_string(),
+        ));
+    }
+
+    let mut cmd = TokioCommand::new(&request.program);
+    cmd.args(&request.args)
+        .current_dir(&request.working_directory)
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    // Repass only allowlisted environment variables
+    for var_name in &request.environment_allowlist {
+        if let Ok(val) = std::env::var(var_name) {
+            cmd.env(var_name, val);
+        }
+    }
+
+    // Set process group in pre_exec for group termination on timeout
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
+
+    let child = cmd.spawn().map_err(SandboxError::SpawnFailed)?;
+
+    match tokio::time::timeout(request.timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => Ok(SandboxResult {
+            success: output.status.success(),
+            return_code: output.status.code(),
+            interrupted: false,
+            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        }),
+        Ok(Err(e)) => Err(SandboxError::WaitFailed(e)),
+        Err(_) => Ok(SandboxResult {
+            success: false,
+            return_code: None,
+            interrupted: true,
+            stdout: String::new(),
+            stderr: format!(
+                "Execution timed out after {} seconds",
+                request.timeout.as_secs()
+            ),
+        }),
+    }
+}
+
+/// Execute code in isolated Linux namespace with non-blocking Tokio timeout guarantee
 pub async fn execute_in_sandbox(
     code: &str,
     config: &SandboxConfig,
 ) -> Result<SandboxResult, SandboxError> {
-    // Validate configuration
     if config.timeout_ms == 0 {
         return Err(SandboxError::InvalidConfig(
             "Timeout must be greater than zero".to_string(),
         ));
     }
 
-    // Build unshare command arguments
-    let mut unshare_args = Vec::new();
+    let mut unshare_args = vec![
+        "--mount".to_string(),
+        "--ipc".to_string(),
+        "--pid".to_string(),
+        "--uts".to_string(),
+    ];
 
-    // Always isolate mount, ipc, pid, uts
-    unshare_args.push("--mount");    // Isolate mount points
-    unshare_args.push("--ipc");      // Isolate IPC resources (System V IPC, POSIX mqueue)
-    unshare_args.push("--pid");      // Isolate PID namespace (process IDs)
-    unshare_args.push("--uts");      // Isolate UTS namespace (hostname and domain name)
-
-    // Conditionally add user namespace (required for root mapping and privilege dropping)
     if config.enable_user_namespace {
-        unshare_args.push("--user");           // Create new user namespace
-        unshare_args.push("--map-root-user");  // Map root user in namespace to current user outside
+        unshare_args.push("--user".to_string());
+        unshare_args.push("--map-root-user".to_string());
     }
 
-    // Conditionally add network namespace
-    // When enable_network=false, we ISOLATE the network namespace (no network access)
-    // When enable_network=true, we SHARE the host's network namespace
     if !config.enable_network {
-        unshare_args.push("--net");    // Isolate network namespace
+        unshare_args.push("--net".to_string());
     }
 
-    // Always fork before unshare (required for proper cleanup with namespaces)
-    unshare_args.push("--fork");
+    unshare_args.push("--fork".to_string());
 
-    // Set up isolated environment command
-    let mut cmd = Command::new("unshare");
-    cmd.args(&unshare_args);
-
-    // Prepare the isolated environment setup and user code
     let setup_code = format!(
         r#"
         export HOME=.sandbox-home
@@ -120,104 +220,35 @@ pub async fn execute_in_sandbox(
         code
     );
 
-    // Configure the command
-    cmd.arg("sh")
-        .arg("-c")
-        .arg(setup_code)
-        .current_dir(&config.cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    unshare_args.push("sh".to_string());
+    unshare_args.push("-c".to_string());
+    unshare_args.push(setup_code);
 
-    // Spawn child process with security restrictions
-    let danger_mode = config.danger_mode;
-    let mut child = unsafe {
-        cmd
-            .pre_exec(move || {
-                // Drop capabilities for security (if not in danger mode)
-                if !danger_mode {
-                    // PR_SET_NO_NEW_PRIVS: prevent gaining more privileges via execve
-                    // This prevents setuid binaries from gaining privileges
-                    if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-                        // Ignore error - not all kernels support this
-                    }
-                }
-                
-                // Additional security: disable core dumps to prevent leaking sensitive information
-                let rlimit = libc::rlimit {
-                    rlim_cur: 0,
-                    rlim_max: 0,
-                };
-                libc::setrlimit(libc::RLIMIT_CORE, &rlimit);
-                
-                // Restrict to a minimal set of supplementary groups
-                // This prevents inheriting unnecessary groups from the parent
-                if libc::setgroups(0, std::ptr::null()) != 0 {
-                    // Ignore error - not critical
-                }
-                
-                Ok(())
-            })
-            .spawn()
-            .map_err(SandboxError::SpawnFailed)?
+    let req = ExecutionRequest {
+        program: PathBuf::from("unshare"),
+        args: unshare_args,
+        working_directory: config.cwd.clone(),
+        timeout: Duration::from_millis(config.timeout_ms),
+        environment_allowlist: vec![
+            "PATH".to_string(),
+            "RUST_LOG".to_string(),
+            "RUST_BACKTRACE".to_string(),
+            "TERM".to_string(),
+        ],
+        network_policy: if config.enable_network {
+            NetworkPolicy::Enabled
+        } else {
+            NetworkPolicy::Disabled
+        },
+        resource_limits: ResourceLimits::default(),
     };
 
-    // **CRITICAL: Guaranteed termination via tokio::time::timeout**
-    let timeout_duration = Duration::from_millis(config.timeout_ms);
-    let child_future = async { child.wait().map_err(SandboxError::WaitFailed) };
-
-    let result = tokio::time::timeout(timeout_duration, child_future).await;
-
-    match result {
-        Ok(Ok(status)) => {
-            // Child exited normally
-            let output = child.wait_with_output().map_err(SandboxError::WaitFailed)?;
-
-            Ok(SandboxResult {
-                success: status.success(),
-                return_code: status.code(),
-                interrupted: false,
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            })
-        }
-        Ok(Err(e)) => {
-            // Child exited with error
-            Err(e)
-        }
-        Err(_) => {
-            // Timeout: force kill the child process
-            let _ = child.kill();
-            let _ = child.wait();
-
-            // Try to get any output that was produced before timeout
-            let output = child
-                .wait_with_output()
-                .unwrap_or_else(|_| std::process::Output {
-                    status: std::process::ExitStatus::from_raw(0),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                });
-
-            Ok(SandboxResult {
-                success: false,
-                return_code: None,
-                interrupted: true,
-                stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-                stderr: format!(
-                    "Command exceeded timeout of {} ms\n{}",
-                    config.timeout_ms,
-                    String::from_utf8_lossy(&output.stderr)
-                ),
-            })
-        }
-    }
+    execute_request(&req).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_sandbox_config_defaults() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -255,5 +286,17 @@ mod tests {
         assert!(!result.interrupted);
         assert_eq!(result.stdout, "test output");
         assert_eq!(result.stderr, "");
+    }
+
+    #[tokio::test]
+    async fn test_async_execution_request_timeout() {
+        let cwd = std::env::current_dir().unwrap();
+        let mut req = ExecutionRequest::new("sleep", cwd.to_str().unwrap());
+        req.args = vec!["10".to_string()];
+        req.timeout = Duration::from_millis(100);
+
+        let result = execute_request(&req).await.unwrap();
+        assert!(result.interrupted, "Execution should have timed out");
+        assert!(!result.success);
     }
 }

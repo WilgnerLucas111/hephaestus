@@ -1,12 +1,21 @@
-use crate::telemetry::time_travel::{TimeTravelSnapshot, StackFrameSnapshot, TimeTravelTelemetry};
+use crate::telemetry::time_travel::{StackFrameSnapshot, TimeTravelSnapshot, TimeTravelTelemetry};
+use futures::future::BoxFuture;
 use std::panic::PanicHookInfo;
 use std::sync::mpsc;
-use futures::future::BoxFuture;
 
+#[allow(clippy::result_large_err)]
 pub trait SkillInterceptor: Send + Sync {
     fn before_skill_execution(&self, skill: &Skill) -> Result<(), InterceptError>;
-    fn after_skill_execution(&self, skill: &Skill, result: &SkillResult) -> Result<(), InterceptError>;
-    fn on_skill_panic(&self, skill: &Skill, panic_info: &PanicHookInfo<'_>) -> Result<RepairTrigger, InterceptError>;
+    fn after_skill_execution(
+        &self,
+        skill: &Skill,
+        result: &SkillResult,
+    ) -> Result<(), InterceptError>;
+    fn on_skill_panic(
+        &self,
+        skill: &Skill,
+        panic_info: &PanicHookInfo<'_>,
+    ) -> Result<RepairTrigger, InterceptError>;
 }
 
 pub struct HephaestusInterceptor {
@@ -57,10 +66,11 @@ pub struct RepairTrigger {
 }
 
 #[derive(Debug, thiserror::Error)]
+#[allow(clippy::result_large_err)]
 pub enum InterceptError {
     #[error("Skill panicked: {skill_name}")]
     SkillPanicked {
-        trigger: RepairTrigger,
+        trigger: Box<RepairTrigger>,
         skill_name: String,
     },
     #[error("Telemetry failed: {0}")]
@@ -85,6 +95,7 @@ pub fn extract_error_keywords(msg: &str) -> Vec<String> {
     msg.split_whitespace().map(|s| s.to_string()).collect()
 }
 
+#[allow(clippy::result_large_err)]
 impl HephaestusInterceptor {
     pub fn new(event_sender: mpsc::Sender<HephaestusEvent>, config: InterceptorConfig) -> Self {
         Self {
@@ -98,12 +109,21 @@ impl HephaestusInterceptor {
     where
         F: FnOnce() -> BoxFuture<'static, crate::error::Result<SkillResult>> + Send + 'static,
     {
-        if _skill.code.contains("panic!") { return SkillResult::Failure("Intentional panic".to_string()); }
+        if _skill.code.contains("panic!") {
+            return SkillResult::Failure("Intentional panic".to_string());
+        }
         // Simple mock for intercept_skill
-        if _skill.code.contains("panic!") { return SkillResult::Failure("Intentional panic".to_string()); } SkillResult::Success
+        if _skill.code.contains("panic!") {
+            return SkillResult::Failure("Intentional panic".to_string());
+        }
+        SkillResult::Success
     }
 
-    pub async fn intercept_skill_with_trigger<F>(&self, _skill: &Skill, _skill_fn: F) -> (SkillResult, Option<RepairTrigger>)
+    pub async fn intercept_skill_with_trigger<F>(
+        &self,
+        _skill: &Skill,
+        _skill_fn: F,
+    ) -> (SkillResult, Option<RepairTrigger>)
     where
         F: FnOnce() -> BoxFuture<'static, crate::error::Result<SkillResult>> + Send + 'static,
     {
@@ -111,11 +131,19 @@ impl HephaestusInterceptor {
         (SkillResult::Success, None)
     }
 
-    pub fn after_skill_execution(&self, _skill: &Skill, _result: &SkillResult) -> Result<(), InterceptError> {
+    pub fn after_skill_execution(
+        &self,
+        _skill: &Skill,
+        _result: &SkillResult,
+    ) -> Result<(), InterceptError> {
         Ok(())
     }
 
-    pub fn on_skill_failure(&self, _skill: &Skill, _result: &SkillResult) -> Result<(), InterceptError> {
+    pub fn on_skill_failure(
+        &self,
+        _skill: &Skill,
+        _result: &SkillResult,
+    ) -> Result<(), InterceptError> {
         Ok(())
     }
 }

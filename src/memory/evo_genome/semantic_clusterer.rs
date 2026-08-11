@@ -13,6 +13,12 @@ pub struct SemanticClusterer {
     next_cluster_id: u64,
 }
 
+impl Default for SemanticClusterer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SemanticClusterer {
     /// Create a new semantic clusterer.
     pub fn new() -> Self {
@@ -41,7 +47,7 @@ impl SemanticClusterer {
         let _hash = hasher.finish();
 
         // Check if we already have a cluster for this hash
-        for (&cluster_id, ref mut members) in &mut self.clusters {
+        for (&cluster_id, members) in &mut self.clusters {
             if members.iter().any(|h| h == &genome.hash) {
                 return cluster_id;
             }
@@ -56,7 +62,7 @@ impl SemanticClusterer {
 
     /// Get the cluster ID for a genome (if already assigned).
     pub fn get_cluster(&self, genome: &RepairGenome) -> Option<u64> {
-        for (&cluster_id, ref members) in &self.clusters {
+        for (&cluster_id, members) in &self.clusters {
             if members.iter().any(|h| h == &genome.hash) {
                 return Some(cluster_id);
             }

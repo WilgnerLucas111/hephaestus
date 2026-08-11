@@ -18,6 +18,12 @@ pub struct AstParser {
     parsers: HashMap<Language, Parser>,
 }
 
+impl Default for AstParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AstParser {
     /// Creates a new AstParser with no pre-loaded parsers.
     pub fn new() -> Self {
@@ -38,8 +44,7 @@ impl AstParser {
             e.insert(parser);
         }
         // Safety: we just inserted if it didn't exist
-        self
-            .parsers
+        self.parsers
             .get_mut(&language)
             .ok_or_else(|| HephaestusError::NotFound("Parser language is missing".to_string()))
     }
@@ -57,7 +62,7 @@ impl AstParser {
     }
 
     /// Serializes a tree-sitter node to a byte vector, skipping comments and errors.
-    fn serialize_node(node: tree_sitter::Node, source: &[u8], buffer: &mut Vec<u8>) {
+    fn serialize_node(node: tree_sitter::Node, _source: &[u8], buffer: &mut Vec<u8>) {
         let kind = node.kind();
         // Skip comment and error nodes
         if kind == "comment" || kind == "error" {
@@ -72,7 +77,7 @@ impl AstParser {
         // Recursively serialize children
         let mut wc = node.walk();
         for child in node.children(&mut wc) {
-            Self::serialize_node(child, source, buffer);
+            Self::serialize_node(child, _source, buffer);
         }
     }
 

@@ -114,10 +114,10 @@ impl TimeTravelTelemetry {
         // Step 3: Capture registers (x86-64 only for now)
         let registers = Self::capture_registers();
 
-        // Step 4: Capture process environment
+        // Step 4: Capture process environment (filtered with secret redaction)
         let cwd =
             env::current_dir().map_err(|e| format!("Failed to get current directory: {}", e))?;
-        let env_vars = env::vars().collect();
+        let env_vars = Self::capture_safe_env_vars();
 
         // Step 5: Process info
         let process_info = Self::get_process_info()?;
@@ -139,6 +139,50 @@ impl TimeTravelTelemetry {
         })
     }
 
+    /// Captures safe environment variables and redacts secret values.
+    pub fn capture_safe_env_vars() -> HashMap<String, String> {
+        let allowlist = [
+            "RUST_LOG",
+            "RUST_BACKTRACE",
+            "APP_ENV",
+            "FEATURE_FLAGS",
+            "CARGO_PKG_NAME",
+            "CARGO_PKG_VERSION",
+            "PATH",
+            "LANG",
+        ];
+
+        let secret_keywords = [
+            "_TOKEN",
+            "_SECRET",
+            "_PASSWORD",
+            "_KEY",
+            "DATABASE_URL",
+            "CREDENTIAL",
+            "AUTH",
+        ];
+
+        let mut safe_vars = HashMap::new();
+        for (key, val) in env::vars() {
+            let key_upper = key.to_uppercase();
+
+            // Check if key is explicitly in allowlist
+            let is_allowed = allowlist.iter().any(|&allowed| key_upper == allowed);
+
+            if is_allowed {
+                // Check if value contains secrets
+                let is_secret = secret_keywords.iter().any(|&k| key_upper.contains(k));
+                if is_secret {
+                    safe_vars.insert(key, "[REDACTED]".to_string());
+                } else {
+                    safe_vars.insert(key, val);
+                }
+            }
+        }
+
+        safe_vars
+    }
+
     /// Extract stack frames with local variables (requires debuginfo)
     fn extract_stack_frames(
         backtrace: &backtrace::Backtrace,
@@ -151,7 +195,8 @@ impl TimeTravelTelemetry {
             // Frame symbols (function name, file, line)
             for symbol in frame.symbols() {
                 let function_name = symbol
-                    .name().map(|n| n.to_string())
+                    .name()
+                    .map(|n| n.to_string())
                     .unwrap_or_else(|| "unknown".to_string());
 
                 let file_path = symbol

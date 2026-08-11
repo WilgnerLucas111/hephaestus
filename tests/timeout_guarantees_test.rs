@@ -2,7 +2,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::time::{timeout, interval};
+use tokio::time::{interval, timeout};
 
 /// Simulated HephaestusInterceptor that spawns a future and returns a JoinHandle.
 /// This mimics the real interceptor which offloads work to a background Tokio task.

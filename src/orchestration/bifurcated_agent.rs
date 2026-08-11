@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::{Mutex, Semaphore};
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 
 use crate::ast::analyzer::ASTAnalyzer;
 use crate::error::Result;
@@ -26,18 +26,19 @@ pub struct BifurcatedAgentConfig {
 }
 
 /// Main skill runner (simplified)
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SkillRunner {
     // In a full implementation, this would contain the actual skill functions
 }
-
 
 impl SkillRunner {
     pub async fn run_skill(&self, _skill: &Skill) -> Result<SkillResult> {
         // In a real implementation, this would invoke the skill function
         // For now, we'll simulate a skill that sometimes fails
-        if _skill.code.contains("panic!") { panic!("Intentional panic"); } Ok(SkillResult::Success)
+        if _skill.code.contains("panic!") {
+            panic!("Intentional panic");
+        }
+        Ok(SkillResult::Success)
     }
 }
 
@@ -46,8 +47,8 @@ pub struct BifurcatedAgent {
     /// Main skill runner
     skill_runner: SkillRunner,
 
-    /// Background repair handles
-    repair_tasks: Vec<JoinHandle<RepairOutcome>>,
+    /// Background repair task set (reaps completed tasks automatically)
+    repair_tasks: JoinSet<RepairOutcome>,
 
     /// Configuration
     config: BifurcatedAgentConfig,
@@ -73,7 +74,7 @@ impl BifurcatedAgent {
 
         Ok(Self {
             skill_runner: SkillRunner::default(),
-            repair_tasks: Vec::new(),
+            repair_tasks: JoinSet::new(),
             config: _config,
             genome_store,
             ast_analyzer,
@@ -88,65 +89,64 @@ impl BifurcatedAgent {
         skill: &Skill,
         interceptor: &crate::interceptor::interceptor::HephaestusInterceptor,
     ) -> Result<SkillResult> {
+        // Reap any background tasks that have finished
+        while self.repair_tasks.try_join_next().is_some() {}
+
         // Main path: execute skill through interceptor to catch panics
         let skill_runner = self.skill_runner.clone();
         let skill_clone = skill.clone();
-        let skill_result = interceptor.intercept_skill(skill, move || {
-            // This closure contains the actual skill execution
-            Box::pin(async move {
-                skill_runner.run_skill(&skill_clone).await
+        let skill_result = interceptor
+            .intercept_skill(skill, move || {
+                // This closure contains the actual skill execution
+                Box::pin(async move { skill_runner.run_skill(&skill_clone).await })
             })
-        }).await;
-        
+            .await;
+
         // For now, we don't have a repair trigger from the interceptor since we're using the simpler intercept_skill method
         let repair_trigger = None;
 
         // If error occurred (either from interception or direct failure), spawn background repair (non-blocking)
         if !matches!(skill_result, SkillResult::Success)
-            && self.repair_tasks.len() < self.config.max_parallel_repairs {
-                 
-                   let _interceptor_clone = interceptor.clone();
-                   let skill_clone = skill.clone();
-                   let genome_store_clone = self.genome_store.clone();
-                   let _ast_analyzer_clone = self.ast_analyzer.clone();
-                   let config_clone = self.config.clone();
-                   let repair_semaphore_clone = self.repair_semaphore.clone();
+            && self.repair_tasks.len() < self.config.max_parallel_repairs
+        {
+            let _interceptor_clone = interceptor.clone();
+            let skill_clone = skill.clone();
+            let genome_store_clone = self.genome_store.clone();
+            let _ast_analyzer_clone = self.ast_analyzer.clone();
+            let config_clone = self.config.clone();
+            let repair_semaphore_clone = self.repair_semaphore.clone();
 
-                 // Spawn repair in background
-                 let skill_name_forerror = skill.name.clone();
-                 let start_time = std::time::Instant::now();
-                 let repair_handle = tokio::spawn(async move {
-                     match Self::run_repair_pipeline(
-                         skill_clone,
-                         repair_trigger,
-                         genome_store_clone,
-                         config_clone,
-                         &repair_semaphore_clone,
-                     )
-                     .await
-                     {
-                         Ok(outcome) => outcome,
-                         Err(_e) => {
-                             // Log the error but still return a RepairOutcome
-                             eprintln!("Error in repair pipeline: {}", _e);
-                             RepairOutcome {
-                                 skill_name: skill_name_forerror,
-                                 success: false,
-                                 confidence: 0.0,
-                                 repair_time_ms: start_time.elapsed().as_millis() as u64,
-                                 mutation_applied: None,
-                             }
-                         }
-                     }
-                 });
-
-                self.repair_tasks.push(repair_handle);
-            }
+            // Spawn repair in background JoinSet
+            let skill_name_forerror = skill.name.clone();
+            let start_time = std::time::Instant::now();
+            self.repair_tasks.spawn(async move {
+                match Self::run_repair_pipeline(
+                    skill_clone,
+                    repair_trigger,
+                    genome_store_clone,
+                    config_clone,
+                    &repair_semaphore_clone,
+                )
+                .await
+                {
+                    Ok(outcome) => outcome,
+                    Err(_e) => {
+                        // Log the error but still return a RepairOutcome
+                        eprintln!("Error in repair pipeline: {}", _e);
+                        RepairOutcome {
+                            skill_name: skill_name_forerror,
+                            success: false,
+                            confidence: 0.0,
+                            repair_time_ms: start_time.elapsed().as_millis() as u64,
+                            mutation_applied: None,
+                        }
+                    }
+                }
+            });
+        }
 
         Ok(skill_result)
     }
-
-
 
     /// Background repair pipeline using the Tribunal architecture
     async fn run_repair_pipeline(
@@ -160,22 +160,8 @@ impl BifurcatedAgent {
         let _permit = repair_semaphore.acquire().await;
         let _skill_name = skill.name.clone();
 
-          // Initialize an empty RepairGenome (Ledger)
-          let mut genome = crate::memory::genome_store::RepairGenome {
-              hash: "".to_string(), // Will be computed later if needed
-              original_code: skill.code.clone(),
-              telemetry_trigger: None,
-              monkey_hypotheses: Vec::new(),
-              rejected_patches: Vec::new(),
-              final_repaired_code: None,
-              narrative_summary: None,
-              timestamp: 0,
-              semantic_cluster: None,
-              wing: None,
-              aaak_compressed: None,
-              dependency_density: None,
-              ast_topology_hash: None,
-          };
+        // Initialize an empty RepairGenome (Ledger)
+        let mut genome = crate::memory::genome_store::RepairGenome::new("", &skill.code);
 
         // Extract telemetry from repair trigger or create basic telemetry
         let telemetry = match repair_trigger.as_ref() {
@@ -193,37 +179,45 @@ impl BifurcatedAgent {
         let patches = wild_monkey
             .generate_patches(&mut genome, &telemetry, &_genome_store)
             .await
-            .map_err(|e| crate::error::HephaestusError::Internal(format!(
-                "Wild Monkey failed to generate patches: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::HephaestusError::Internal(format!(
+                    "Wild Monkey failed to generate patches: {}",
+                    e
+                ))
+            })?;
 
         // Phase 6: Neutral Judge executes trials on the patches
         let trial_results = neutral_judge
             .execute_trials(patches.clone(), &genome)
             .await
-            .map_err(|e| crate::error::HephaestusError::Internal(format!(
-                "Neutral Judge failed to execute trials: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::HephaestusError::Internal(format!(
+                    "Neutral Judge failed to execute trials: {}",
+                    e
+                ))
+            })?;
 
         // Also run safeguard inspection (though we don't use the result directly in this flow)
         let _ = neutral_judge
             .inspect_safeguards(patches.clone())
             .await
-            .map_err(|e| crate::error::HephaestusError::Internal(format!(
-                "Neutral Judge failed to inspect safeguards: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::HephaestusError::Internal(format!(
+                    "Neutral Judge failed to inspect safeguards: {}",
+                    e
+                ))
+            })?;
 
         // Phase 7: Angry Master applies penalties and selects final repair
         angry_master
             .apply_penalties(&mut genome, trial_results.clone())
             .await
-            .map_err(|e| crate::error::HephaestusError::Internal(format!(
-                "Angry Master failed to apply penalties: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::HephaestusError::Internal(format!(
+                    "Angry Master failed to apply penalties: {}",
+                    e
+                ))
+            })?;
 
         // Determine if we have a successful verdict
         let verdict = genome.final_repaired_code.is_some();
@@ -232,10 +226,12 @@ impl BifurcatedAgent {
         narrative_agent
             .record_verdict(&mut genome, verdict, &telemetry)
             .await
-            .map_err(|e| crate::error::HephaestusError::Internal(format!(
-                "Narrative Agent failed to record verdict: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::HephaestusError::Internal(format!(
+                    "Narrative Agent failed to record verdict: {}",
+                    e
+                ))
+            })?;
 
         // Update timestamp and compute hash if we have a final repaired code
         genome.timestamp = std::time::SystemTime::now()
@@ -246,8 +242,8 @@ impl BifurcatedAgent {
         // In a real implementation, we would compute a proper hash of the genome
         // For now, we'll use a simple placeholder
         if !genome.original_code.is_empty() {
-            use std::hash::{Hash, Hasher};
             use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
             let mut hasher = DefaultHasher::new();
             genome.original_code.hash(&mut hasher);
             genome.hash = hasher.finish().to_string();
@@ -256,11 +252,9 @@ impl BifurcatedAgent {
         // Store the populated RepairGenome in the genome store
         {
             let store = _genome_store.lock().await;
-            store.store_genome(&mut genome)
-                .map_err(|e| crate::error::HephaestusError::Internal(format!(
-                    "Failed to store genome: {}",
-                    e
-                )))?;
+            store.store_genome(&mut genome).map_err(|e| {
+                crate::error::HephaestusError::Internal(format!("Failed to store genome: {}", e))
+            })?;
         }
 
         // Determine the outcome based on whether we have a final repaired code
@@ -276,14 +270,11 @@ impl BifurcatedAgent {
             mutation_applied,
         })
     }
-
-
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_bifurcated_agent_creation() -> Result<()> {

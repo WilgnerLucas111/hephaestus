@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::memory::genome_store::{RepairGenome, RejectionRecord};
+use crate::memory::genome_store::{RejectionRecord, RepairGenome};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The Angry Master actor enforces penalties and ensures discipline.
@@ -50,7 +50,7 @@ impl AngryMaster {
             } else {
                 "Patch failed to execute successfully in sandbox".to_string()
             };
-            
+
             genome.rejected_patches.push(RejectionRecord {
                 patch,
                 reason,
@@ -61,7 +61,7 @@ impl AngryMaster {
         // If we have successful patches, pick the first one as final solution
         if let Some(first_successful) = successful_patches.first() {
             genome.final_repaired_code = Some(first_successful.clone());
-            
+
             // Clear monkey hypotheses as we've moved past hypothesis generation
             genome.monkey_hypotheses.clear();
         } else {

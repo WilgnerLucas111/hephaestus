@@ -3,10 +3,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Initializing Hephaestus OS AI...");
 
     // Import necessary types
+    use hephaestus::interceptor::interceptor::Skill;
+    use hephaestus::interceptor::interceptor::{
+        HephaestusEvent, HephaestusInterceptor, InterceptorConfig, PermissionMode,
+    };
     use hephaestus::memory::genome_store::GenomeStore;
     use hephaestus::orchestration::bifurcated_agent::{BifurcatedAgent, BifurcatedAgentConfig};
-    use hephaestus::interceptor::interceptor::{HephaestusInterceptor, InterceptorConfig, PermissionMode, HephaestusEvent};
-use hephaestus::interceptor::interceptor::Skill;
 
     // Initialize the genome store (using a file for persistence)
     let genome_store = GenomeStore::open("hephaestus_genomes.db")?;
@@ -42,7 +44,8 @@ use hephaestus::interceptor::interceptor::Skill;
             fn main() {
                 println!("Hello from test skill!");
             }
-        "#.to_string(),
+        "#
+        .to_string(),
     };
     println!("Test skill created: {}", skill.name);
 

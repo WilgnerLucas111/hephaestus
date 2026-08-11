@@ -1,60 +1,71 @@
 # Hephaestus
 
-**Hephaestus** is a self-repairing AI agent built entirely in **100% pure, memory-safe Rust**.
+**Hephaestus** is an experimental self-repair framework for Rust projects, exploring failure capture, isolated patch validation, and persistent repair memory.
 
-Designed for zero-trust environments, Hephaestus wraps critical software execution layers, catches fatal panics in real-time, extracts forensic telemetry (Time-Travel Memory Capture), and repairs the underlying codebase asynchronously in the background—all without blocking the main event loops.
+> ⚠️ **Status:** Early proof of concept / research prototype. Not suitable for production or untrusted-code execution.
 
-## 🚀 Key Capabilities
+---
 
-* **Error Interception:** Rust traits capture panics natively on execution bounds.
-* **Time-Travel Telemetry:** Captures exact stack frames and execution state at the exact moment of the crash.
-* **Native AST Analysis:** Leverages `tree-sitter-rs` directly to understand the code structure (no sub-processes, no external Python scripts).
-* **Bifurcated Orchestration:** Repairs are executed on a separate, non-blocking asynchronous pipeline powered by Tokio, freeing the main system to continue operations.
-* **Zero-Trust Linux Sandbox:** Validates mutated/repaired code safely inside a Linux namespace using `unshare` and absolute timeouts before committing changes.
-* **In-Process Repair Genome Storage:** Utilizes a local SQLite database (`rusqlite`) to persist repair patterns securely.
-* **7-Phase Investigation Protocol:** A rigorous state-machine evaluation process encoded with compile-time hard gates.
+## 🚀 Overview & Key Features
+
+Hephaestus wraps software execution, captures detailed panic telemetry at failure time, executes isolated background repair cycles on disposable workspace copies, and persists successful fixes into a SQLite "Repair Genome".
+
+* **Non-Blocking Asynchronous Pipeline:** Background repairs run on an isolated Tokio `JoinSet` pipeline without stalling the main execution thread.
+* **Disposable Workspace Isolation:** All candidate patches are compiled and tested inside temporary disposable workspace copies. Original source code files are never mutated directly during repair validation.
+* **Real End-to-End Repair Engine:** Automatically reproduces failures (`cargo test`), generates patch candidates (Heuristic or optional OpenRouter LLM), applies patches, validates (`cargo check`, `cargo clippy`, `cargo test`), and produces unified diffs.
+* **Secret Redaction & Telemetry Filtering:** Filters environment variables and redacts sensitive credentials (`*_TOKEN`, `*_SECRET`, `DATABASE_URL`, etc.).
+* **Persistent Repair Genome:** Stores original code, telemetry triggers, patch diffs, and narrative summaries in SQLite via `rusqlite`.
+* **Tribunal Architecture:** Organizes repair validation into specialized roles (`WildMonkey`, `NeutralJudge`, `AngryMaster`, `NarrativeAgent`).
+
+---
 
 ## 🛠️ Architecture
 
-At its core, Hephaestus does not use external runtimes or polyglot microservices. It is a strictly controlled Monolithic Rust binary running on Tokio. 
+```
+Crash Intercepted -> Telemetry Snapshot -> Non-blocking Bifurcation
+                                                │
+                                                ▼
+  ┌────────────────────────────────────────────────────────────────────────┐
+  │                           The Courtroom / Tribunal                      │
+  │                                                                        │
+  │ 1. WildMonkey     -> Generates Patch Candidates (Heuristic / LLM)       │
+  │ 2. NeutralJudge   -> Validates in Disposable Workspace (cargo test)   │
+  │ 3. AngryMaster    -> Enforces Static Analysis & Safety Policies        │
+  │ 4. NarrativeAgent -> Records Ledger into SQLite Repair Genome           │
+  └────────────────────────────────────────────────────────────────────────┘
+```
 
-1. **Skill Fails:** An execution fails, panicking inside the `HephaestusInterceptor`.
-2. **Telemetry Extraction:** The state, stack, and environment variables are snapshotted.
-3. **Bifurcation:** The main loop immediately drops the failed process safely without crashing the main application thread.
-4. **Background Repair (The 7 Phases):**
-    * *Problem Definition & Extraction*
-    * *Reproduction Attempt*
-    * *Evidence Collection (AST parsing)*
-    * *Hypothesis Formulation*
-    * *Sandbox Validation (Zero-Trust Mutation)*
-    * *Repair Execution & Fallbacks*
-    * *Storing the "Repair Genome" locally via SQLite with Evo-Genome enhancements (semantic clustering, wing-based organization, AAAK compression)
+---
 
-## 📦 Installation
-
-Since Hephaestus is just pure Rust, simply install safely via Cargo.
+## 📦 Building & Testing
 
 ```bash
+# Clone the repository
 git clone https://github.com/WilgnerLucas111/hephaestus.git
 cd hephaestus
-cargo build --release
+
+# Run code formatting and clippy checks
+cargo fmt --all -- --check
+cargo clippy --all-targets -- -D warnings
+
+# Run all unit & integration tests
+cargo test --all-targets
 ```
 
-## 🧪 Testing the 7-Phase Protocol
+---
 
-Hephaestus strictly enforces zero compiler warnings and heavily utilizes the type-state pattern to ensure hard compilation validation of repair integrity.
+## 🔑 Optional OpenRouter LLM Integration
 
-Run the test suite, which includes automated mocking of SQLite Genomes and time-travel memory extraction:
+By default, Hephaestus uses a deterministic heuristic patch generator. You can optionally enable AI-driven patch generation via OpenRouter:
 
 ```bash
-cargo test -- --nocapture
+export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
-## 🛡️ Best Practices & Security
+If no key is present or the API is unreachable, Hephaestus seamlessly falls back to deterministic heuristic patch generation.
 
-- **Strict Permissions:** Sandbox configurations provide granular control over mutations (`ReadOnly`, `DangerFullAccess`, etc.).
-- **Memory Safety:** 100% Rust architecture guarantees absence of manual memory leaks, Data Races, and use-after-free bugs.
+---
 
 ## 📄 License
 
-This project is licensed under the terms integrated within the repository (see [LICENSE](LICENSE)).
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

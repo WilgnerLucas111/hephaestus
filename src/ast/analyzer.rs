@@ -67,7 +67,7 @@ impl CallGraph {
             nodes: HashMap::new(),
         }
     }
-    
+
     pub fn add_node(&mut self, node: StructureNode) {
         self.nodes.insert(node.name.clone(), node);
     }
@@ -115,7 +115,7 @@ impl ASTAnalyzer {
         Ok(ASTAnalyzer { parser, language })
     }
 
-     /// Diagnose error location and surrounding context
+    /// Diagnose error location and surrounding context
     ///
     /// # Arguments
     ///
@@ -154,7 +154,7 @@ impl ASTAnalyzer {
             .iter()
             .find(|n| {
                 // Match by line number (approximate since we don't store exact byte ranges in StructureNode yet)
-                 n.line_number == error_node.start_position().row as u32 + 1
+                n.line_number == error_node.start_position().row as u32 + 1
             })
             .cloned()
             .unwrap_or_else(|| StructureNode {
@@ -167,8 +167,11 @@ impl ASTAnalyzer {
             });
 
         // Generate deterministic ID for error node
-        let node_id =
-            Self::make_deterministic_id(&structure_node.node_type, &structure_node.name, structure_node.line_number);
+        let node_id = Self::make_deterministic_id(
+            &structure_node.node_type,
+            &structure_node.name,
+            structure_node.line_number,
+        );
 
         // Create slim node for error location
         let slim = SlimNode {
@@ -215,34 +218,35 @@ impl ASTAnalyzer {
         let mut nodes = Vec::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
-        
+
         // Depth-first traversal to find function definitions
         loop {
             let node = cursor.node();
-            
+
             // Check if this node is a function definition
             if self.is_function_definition(&node)
-                && let Some(structure_node) = self.node_to_structure(&node, _source_code) {
-                    nodes.push(structure_node);
-                }
-            
+                && let Some(structure_node) = self.node_to_structure(&node, _source_code)
+            {
+                nodes.push(structure_node);
+            }
+
             // Try to go deeper
             if cursor.goto_first_child() {
                 continue;
             }
-            
+
             // Try to go to next sibling
             if cursor.goto_next_sibling() {
                 continue;
             }
-            
+
             // Try to go up to parent
             loop {
                 if !cursor.goto_parent() {
                     // We've traversed the entire tree
                     return Ok(nodes);
                 }
-                
+
                 // Try to go to next sibling from parent
                 if cursor.goto_next_sibling() {
                     break;
@@ -250,8 +254,6 @@ impl ASTAnalyzer {
             }
         }
     }
-
-
 
     /// Check if a tree-sitter node represents a function definition
     fn is_function_definition(&self, node: &tree_sitter::Node) -> bool {
@@ -267,16 +269,20 @@ impl ASTAnalyzer {
     }
 
     /// Convert a tree-sitter node to a StructureNode
-    fn node_to_structure(&self, node: &tree_sitter::Node, _source_code: &str) -> Option<StructureNode> {
+    fn node_to_structure(
+        &self,
+        node: &tree_sitter::Node,
+        _source_code: &str,
+    ) -> Option<StructureNode> {
         // Extract the text content of the node
         let _node_text = node.utf8_text(_source_code.as_bytes()).ok()?;
-        
+
         // Extract function name
         let name = self.extract_function_name(node, _source_code)?;
-        
+
         // Extract signature
         let signature = self.extract_function_signature(node, _source_code).ok()?;
-        
+
         Some(StructureNode {
             node_type: "function".to_string(),
             name,
@@ -288,11 +294,15 @@ impl ASTAnalyzer {
     }
 
     /// Extract function name from a function definition node
-    fn extract_function_name(&self, node: &tree_sitter::Node, _source_code: &str) -> Option<String> {
+    fn extract_function_name(
+        &self,
+        node: &tree_sitter::Node,
+        _source_code: &str,
+    ) -> Option<String> {
         if self.language == tree_sitter_rust::language() {
             // In Rust, look for "identifier" child of function_item
             let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
+            for child in node.children(&mut cursor) {
                 if child.kind() == "identifier" {
                     return Some(child.utf8_text(_source_code.as_bytes()).ok()?.to_string());
                 }
@@ -300,12 +310,17 @@ impl ASTAnalyzer {
         } else if self.language == tree_sitter_c::language() {
             // In C, look for "function_declarator" -> "identifier"
             let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
+            for child in node.children(&mut cursor) {
                 if child.kind() == "function_declarator" {
                     let mut grandchild_cursor = child.walk();
                     for grandchild in child.children(&mut grandchild_cursor) {
                         if grandchild.kind() == "identifier" {
-                            return Some(grandchild.utf8_text(_source_code.as_bytes()).ok()?.to_string());
+                            return Some(
+                                grandchild
+                                    .utf8_text(_source_code.as_bytes())
+                                    .ok()?
+                                    .to_string(),
+                            );
                         }
                     }
                 }
@@ -321,9 +336,10 @@ impl ASTAnalyzer {
         _source_code: &str,
     ) -> Result<String> {
         // Extract the text content of the node
-        let node_text = node.utf8_text(_source_code.as_bytes())
-            .map_err(|e| HephaestusError::InvalidInput(format!("Failed to extract node text: {}", e)))?;
-        
+        let node_text = node.utf8_text(_source_code.as_bytes()).map_err(|e| {
+            HephaestusError::InvalidInput(format!("Failed to extract node text: {}", e))
+        })?;
+
         // For now, return the first line of the function (signature)
         // A more sophisticated implementation would extract just the signature line
         let lines: Vec<&str> = node_text.lines().collect();
@@ -339,34 +355,35 @@ impl ASTAnalyzer {
         let mut call_graph = CallGraph::new();
         let root = tree.root_node();
         let mut cursor = root.walk();
-        
+
         // Depth-first traversal to find call expressions
         loop {
             let node = cursor.node();
-            
+
             // Check if this node is a call expression
             if self.is_call_expression(&node)
-                && let Some(edge) = self.node_to_call_edge(&node, _source_code) {
-                    call_graph.add_edge(edge);
-                }
-            
+                && let Some(edge) = self.node_to_call_edge(&node, _source_code)
+            {
+                call_graph.add_edge(edge);
+            }
+
             // Try to go deeper
             if cursor.goto_first_child() {
                 continue;
             }
-            
+
             // Try to go to next sibling
             if cursor.goto_next_sibling() {
                 continue;
             }
-            
+
             // Try to go up to parent
             loop {
                 if !cursor.goto_parent() {
                     // We've traversed the entire tree
                     return Ok(call_graph);
                 }
-                
+
                 // Try to go to next sibling from parent
                 if cursor.goto_next_sibling() {
                     break;
@@ -392,11 +409,11 @@ impl ASTAnalyzer {
     fn node_to_call_edge(&self, node: &tree_sitter::Node, _source_code: &str) -> Option<CallEdge> {
         // Extract the function being called
         let callee = self.extract_callee_name(node, _source_code)?;
-        
+
         // For simplicity, we'll use a placeholder caller
         // A full implementation would traverse up to find the containing function
         let caller = "unknown_function".to_string();
-        
+
         Some(CallEdge {
             caller,
             callee,
@@ -412,7 +429,7 @@ impl ASTAnalyzer {
             if node.kind() == "method_call" {
                 // Find the method name (identifier after the dot)
                 let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
+                for child in node.children(&mut cursor) {
                     if child.kind() == "identifier" {
                         return Some(child.utf8_text(_source_code.as_bytes()).ok()?.to_string());
                     }
@@ -420,7 +437,7 @@ impl ASTAnalyzer {
             } else if node.kind() == "call_expression" {
                 // Find the function being called
                 let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
+                for child in node.children(&mut cursor) {
                     if child.kind() == "identifier" {
                         return Some(child.utf8_text(_source_code.as_bytes()).ok()?.to_string());
                     }
@@ -430,7 +447,7 @@ impl ASTAnalyzer {
             // In C, look for the function name in a call_expression
             if node.kind() == "call_expression" {
                 let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
+                for child in node.children(&mut cursor) {
                     if child.kind() == "identifier" {
                         return Some(child.utf8_text(_source_code.as_bytes()).ok()?.to_string());
                     }
@@ -473,10 +490,7 @@ impl ASTAnalyzer {
             let line = lines[i].trim();
             if line.starts_with("//") || line.starts_with("/*") || line.starts_with("!") {
                 // Found a comment line, clean it up
-                let cleaned = line
-                    .trim_start_matches(['/', '*', '!'])
-                    .trim()
-                    .to_string();
+                let cleaned = line.trim_start_matches(['/', '*', '!']).trim().to_string();
                 if !cleaned.is_empty() {
                     return cleaned;
                 }
@@ -515,84 +529,84 @@ impl ASTAnalyzer {
         error_column: Option<u32>,
     ) -> Result<tree_sitter::Node<'a>> {
         let root = tree.root_node();
-        
+
         // Convert to 0-indexed for tree-sitter
         let zero_indexed_line = error_line.saturating_sub(1) as usize;
         let zero_indexed_column = error_column.map(|c| c.saturating_sub(1) as usize);
-        
+
         // Find the deepest node that contains the error position
         let mut best_match = None;
         let mut depth = 0;
-        
+
         // Depth-first search to find the deepest matching node
         let mut cursor = root.walk();
         let mut current_depth = 0;
-        
+
         loop {
             let node = cursor.node();
             let node_start_line = node.start_position().row;
             let node_start_column = node.start_position().column;
             let node_end_line = node.end_position().row;
             let node_end_column = node.end_position().column;
-            
-             // Check if the error position is within this node's range
-             let mut _contains_position = false;
-             
-             if zero_indexed_line > node_end_line {
-                 // Error is below this node
-                 _contains_position = false;
-             } else if zero_indexed_line < node_start_line {
-                 // Error is above this node
-                 _contains_position = false;
-             } else {
-                 // Error is on the same line range as node
-                 if zero_indexed_line == node_start_line && zero_indexed_line == node_end_line {
-                     // Error, start, and end are all on the same line
-                     if let Some(col) = zero_indexed_column {
-                         _contains_position = (col >= node_start_column) && (col <= node_end_column);
-                     } else {
-                         _contains_position = true; // No column specified, just check line
-                     }
-                 } else if zero_indexed_line == node_start_line {
-                     // Error is on the start line
-                     if let Some(col) = zero_indexed_column {
-                         _contains_position = col >= node_start_column;
-                     } else {
-                         _contains_position = true;
-                     }
-                 } else if zero_indexed_line == node_end_line {
-                     // Error is on the end line
-                     if let Some(col) = zero_indexed_column {
-                         _contains_position = col <= node_end_column;
-                     } else {
-                         _contains_position = true;
-                     }
-                 } else {
-                     // Error is between start and end lines (exclusive)
-                     _contains_position = true;
-                 }
-              }
-              
-              if _contains_position {
-                 // This node contains the error position
-                 // Keep track of the deepest match
-                 if best_match.is_none() || current_depth > depth {
-                     best_match = Some(node);
-                     depth = current_depth;
-                 }
-             }
-            
+
+            // Check if the error position is within this node's range
+            let mut _contains_position = false;
+
+            if zero_indexed_line > node_end_line {
+                // Error is below this node
+                _contains_position = false;
+            } else if zero_indexed_line < node_start_line {
+                // Error is above this node
+                _contains_position = false;
+            } else {
+                // Error is on the same line range as node
+                if zero_indexed_line == node_start_line && zero_indexed_line == node_end_line {
+                    // Error, start, and end are all on the same line
+                    if let Some(col) = zero_indexed_column {
+                        _contains_position = (col >= node_start_column) && (col <= node_end_column);
+                    } else {
+                        _contains_position = true; // No column specified, just check line
+                    }
+                } else if zero_indexed_line == node_start_line {
+                    // Error is on the start line
+                    if let Some(col) = zero_indexed_column {
+                        _contains_position = col >= node_start_column;
+                    } else {
+                        _contains_position = true;
+                    }
+                } else if zero_indexed_line == node_end_line {
+                    // Error is on the end line
+                    if let Some(col) = zero_indexed_column {
+                        _contains_position = col <= node_end_column;
+                    } else {
+                        _contains_position = true;
+                    }
+                } else {
+                    // Error is between start and end lines (exclusive)
+                    _contains_position = true;
+                }
+            }
+
+            if _contains_position {
+                // This node contains the error position
+                // Keep track of the deepest match
+                if best_match.is_none() || current_depth > depth {
+                    best_match = Some(node);
+                    depth = current_depth;
+                }
+            }
+
             // Try to go deeper
             if cursor.goto_first_child() {
                 current_depth += 1;
                 continue;
             }
-            
+
             // Try to go to next sibling
             if cursor.goto_next_sibling() {
                 continue;
             }
-            
+
             // Try to go up to parent
             loop {
                 if !cursor.goto_parent() {
@@ -600,19 +614,19 @@ impl ASTAnalyzer {
                     break;
                 }
                 current_depth -= 1;
-                
+
                 // Try to go to next sibling from parent
                 if cursor.goto_next_sibling() {
                     break;
                 }
             }
-            
+
             // If we couldn't go anywhere, we're done
             if !cursor.goto_first_child() && !cursor.goto_next_sibling() {
                 break;
             }
         }
-        
+
         best_match.ok_or_else(|| {
             HephaestusError::InvalidInput(format!(
                 "No AST node found at line {}, column {:?}",
@@ -642,45 +656,45 @@ impl ASTAnalyzer {
         // Get the byte range of the node
         let start_byte = node.start_byte();
         let end_byte = node.end_byte();
-        
+
         // Convert source code to lines with byte offsets
         let lines: Vec<&str> = _source_code.lines().collect();
         let mut line_offsets = Vec::new();
         let mut byte_offset = 0usize;
-        
+
         for line in &lines {
             line_offsets.push(byte_offset);
             byte_offset += line.len() + 1; // +1 for newline
         }
-        
+
         // Find the line numbers for the node's start and end
         let start_line = line_offsets
             .iter()
             .position(|&offset| offset > start_byte)
             .map(|pos| pos.saturating_sub(1))
             .unwrap_or(0);
-            
+
         let end_line = line_offsets
             .iter()
             .position(|&offset| offset >= end_byte)
             .map(|pos| pos.saturating_sub(1))
             .unwrap_or(lines.len().saturating_sub(1));
-        
+
         // Calculate context range
         let context_start = start_line.saturating_sub(context_lines);
         let context_end = (end_line + context_lines).min(lines.len().saturating_sub(1));
-        
+
         // Extract the context lines
         let context_lines_vec: Vec<String> = lines[context_start..=context_end]
             .iter()
             .map(|line| line.to_string())
             .collect();
-        
-         Ok(context_lines_vec.join("\n"))
-     }
+
+        Ok(context_lines_vec.join("\n"))
+    }
 }
- 
- #[cfg(test)]
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use tree_sitter_c::language as c_language;

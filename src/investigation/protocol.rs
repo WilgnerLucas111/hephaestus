@@ -252,6 +252,7 @@ impl InvestigationOutput {
 
 /// State machine enforcing 7-phase protocol
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum InvestigationPhase {
     Phase1(ProblemDefinition),
     Phase2(ReproductionAttempt),

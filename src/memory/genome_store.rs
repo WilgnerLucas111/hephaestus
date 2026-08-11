@@ -9,7 +9,7 @@ use std::sync::Mutex;
 ///
 /// This store provides safe persistence of RepairGenomes with protection against
 /// SQL injection and path traversal attacks.
-/// 
+///
 /// In Phase 9 (Evo-Genome), this store also implements:
 /// - Semantic clustering of failures using Leiden clustering (via Graphify placeholder)
 /// - Wing-based organization in the MemPalace (WingOfConcurrency, WingOfMemory, etc.)
@@ -226,26 +226,21 @@ impl GenomeStore {
         }
 
         // Serialize the enhanced genome to JSON
-        let genome_json = serde_json::to_string(&genome)
-            .map_err(HephaestusError::Json)?;
+        let genome_json = serde_json::to_string(&genome).map_err(HephaestusError::Json)?;
 
         // Check memory limit (45 MiB = 45 * 1024 * 1024 bytes)
         const MAX_SIZE_BYTES: u64 = 45 * 1024 * 1024;
         let current_size = self.get_database_size()?;
         let json_size = genome_json.len() as u64;
-        let new_size = current_size
-            .checked_add(json_size)
-            .ok_or_else(|| {
-                HephaestusError::InvalidInput("Genome size calculation overflow".to_string())
-            })?;
+        let new_size = current_size.checked_add(json_size).ok_or_else(|| {
+            HephaestusError::InvalidInput("Genome size calculation overflow".to_string())
+        })?;
 
         if new_size > MAX_SIZE_BYTES {
             return Err(HephaestusError::InvalidInput(format!(
                 "Storing this genome would exceed the 45 MiB memory limit. \
                 Current size: {} bytes, Required: {} bytes, Limit: {} bytes",
-                current_size,
-                json_size,
-                MAX_SIZE_BYTES
+                current_size, json_size, MAX_SIZE_BYTES
             )));
         }
 
@@ -292,10 +287,7 @@ impl GenomeStore {
         // Since hash is unique, we expect at most one row
         let genome_json = rows.next().transpose()?;
         let genome = if let Some(json) = genome_json {
-            Some(
-                serde_json::from_str(&json)
-                    .map_err(HephaestusError::Json)?,
-            )
+            Some(serde_json::from_str(&json).map_err(HephaestusError::Json)?)
         } else {
             None
         };
@@ -344,6 +336,30 @@ impl GenomeStore {
     fn get_database_size(&self) -> Result<u64> {
         let metadata = std::fs::metadata(&self.db_path)?;
         Ok(metadata.len())
+    }
+
+    /// Retrieves all successful genomes (those with a final repaired code).
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(vec)` - Vector of successful RepairGenomes
+    /// * `Err(HephaestusError)` if the query fails
+    pub fn get_successful_genomes(&self) -> Result<Vec<RepairGenome>> {
+        let mut stmt = self.connection.prepare("SELECT genome_json FROM genomes")?;
+
+        let rows = stmt.query_map(params![], |row| row.get::<_, String>(0))?;
+
+        let mut genomes = Vec::new();
+        for row in rows {
+            let genome_json = row?;
+            let genome: RepairGenome =
+                serde_json::from_str(&genome_json).map_err(HephaestusError::Json)?;
+            if genome.final_repaired_code.is_some() {
+                genomes.push(genome);
+            }
+        }
+
+        Ok(genomes)
     }
 }
 
@@ -399,28 +415,29 @@ pub struct RepairGenome {
     pub ast_topology_hash: Option<u64>,
 }
 
-    /// Retrieves all successful genomes (those with a final repaired code).
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(vec)` - Vector of successful RepairGenomes
-    /// * `Err(HephaestusError)` if the query fails
-    pub fn get_successful_genomes(&self) -> Result<Vec<RepairGenome>> {
-        let mut stmt = self
-            .connection
-            .prepare("SELECT genome_json FROM genomes WHERE final_repaired_code IS NOT NULL")?;
-
-        let mut rows = stmt.query_map(params![], |row| row.get::<_, String>(0))?;
-
-        let mut genomes = Vec::new();
-        while let Some(genome_json) = rows.next()? {
-            let genome: RepairGenome = serde_json::from_str(&genome_json)
-                .map_err(HephaestusError::Json)?;
-            genomes.push(genome);
+impl RepairGenome {
+    /// Helper constructor to instantiate RepairGenome with default optional fields.
+    pub fn new<S: Into<String>>(hash: S, original_code: S) -> Self {
+        Self {
+            hash: hash.into(),
+            original_code: original_code.into(),
+            telemetry_trigger: None,
+            monkey_hypotheses: Vec::new(),
+            rejected_patches: Vec::new(),
+            final_repaired_code: None,
+            narrative_summary: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            semantic_cluster: None,
+            wing: None,
+            aaak_compressed: None,
+            dependency_density: None,
+            ast_topology_hash: None,
         }
-
-        Ok(genomes)
     }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -493,9 +510,15 @@ mod tests {
         updated_genome.wing = Some("WingOfMemory".to_string());
         store.store_genome(&mut updated_genome)?;
         let retrieved_updated = store.get_genome(&genome.hash)?;
-        assert!(retrieved_updated.is_some(), "Genome should exist after update");
+        assert!(
+            retrieved_updated.is_some(),
+            "Genome should exist after update"
+        );
         if let Some(ref r) = retrieved_updated {
-            assert_eq!(r.final_repaired_code, Some("fn main() { let x = 42; }".to_string()));
+            assert_eq!(
+                r.final_repaired_code,
+                Some("fn main() { let x = 42; }".to_string())
+            );
             assert_eq!(r.timestamp, now + 1);
             assert_eq!(r.semantic_cluster, Some(2));
             assert_eq!(r.wing, Some("WingOfMemory".to_string()));
@@ -507,6 +530,7 @@ mod tests {
         assert!(deleted.is_none(), "Genome should not exist after deletion");
 
         // Clean up
+        let _ = std::fs::remove_file(&db_path);
         temp_dir.close()?;
         Ok(())
     }

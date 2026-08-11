@@ -1,5 +1,5 @@
 use crate::memory::genome_store::RepairGenome;
-use crate::sandbox::executor::{execute_in_sandbox, SandboxConfig, PermissionMode};
+use crate::sandbox::executor::{PermissionMode, SandboxConfig, execute_in_sandbox};
 // We don't need to import Result or HephaestusError if we use the fully qualified paths in the function signatures
 // But we still need Result for the return type. Let's keep Result and remove the HephaestusError import.
 use crate::error::Result;
@@ -68,13 +68,10 @@ impl NeutralJudge {
     /// * `Ok(true)` if all patches pass safeguards
     /// * `Ok(false)` if any patch fails safeguards
     /// * `Err(crate::error::HephaestusError)` if inspection fails
-    pub async fn inspect_safeguards(
-        &self,
-        patches: Vec<String>,
-    ) -> Result<bool> {
+    pub async fn inspect_safeguards(&self, patches: Vec<String>) -> Result<bool> {
         // Simple safeguard: reject patches containing obviously dangerous keywords
         let dangerous_keywords = [
-            "unsafe", 
+            "unsafe",
             "std::process::exit",
             "fs::remove_dir_all",
             "std::mem::forget",

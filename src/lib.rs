@@ -11,5 +11,5 @@ pub mod tribunal;
 // Re-export common types for easier access
 pub use error::{HephaestusError, Result};
 pub use interceptor::interceptor::{HephaestusEvent, InterceptError, Skill, SkillResult};
-pub use memory::genome_store::{TribunalActor};
+pub use memory::genome_store::TribunalActor;
 pub use tribunal::{AngryMaster, NarrativeAgent, NeutralJudge, WildMonkey};
