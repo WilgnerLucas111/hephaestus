@@ -3,8 +3,7 @@ use crate::memory::genome_store::{GenomeStore, RepairGenome};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::process::Command;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 /// Report of a failed test run
@@ -71,39 +70,61 @@ impl ProjectRepairEngine {
         Ok(())
     }
 
-    /// Executes `cargo test` on a project path and captures failure details if any.
+    /// Executes a sandboxed `cargo` command with `--offline`, non-blocking timeout, and environment isolation.
+    pub async fn run_sandboxed_cargo(
+        project_dir: &Path,
+        subcommand: &str,
+        extra_args: &[&str],
+        timeout_secs: u64,
+    ) -> Result<crate::sandbox::executor::SandboxResult> {
+        let mut args = vec![subcommand.to_string(), "--offline".to_string()];
+        for arg in extra_args {
+            args.push(arg.to_string());
+        }
+
+        let req = crate::sandbox::executor::ExecutionRequest {
+            program: PathBuf::from("cargo"),
+            args,
+            working_directory: project_dir.to_path_buf(),
+            timeout: Duration::from_secs(timeout_secs),
+            environment_allowlist: vec![
+                "PATH".to_string(),
+                "RUST_LOG".to_string(),
+                "RUST_BACKTRACE".to_string(),
+                "TERM".to_string(),
+                "HOME".to_string(),
+                "USER".to_string(),
+            ],
+            network_policy: crate::sandbox::executor::NetworkPolicy::Disabled,
+            resource_limits: crate::sandbox::executor::ResourceLimits::default(),
+        };
+
+        crate::sandbox::executor::execute_request(&req)
+            .await
+            .map_err(|e| HephaestusError::Internal(format!("Sandbox execution error: {}", e)))
+    }
+
+    /// Executes `cargo test --offline` in sandbox and captures failure details if any.
     pub async fn run_cargo_test(project_dir: &Path) -> Result<(bool, FailureReport)> {
         let start = Instant::now();
-        let output = Command::new("cargo")
-            .arg("test")
-            .arg("--")
-            .arg("--nocapture")
-            .current_dir(project_dir)
-            .output()
-            .await
-            .map_err(|e| {
-                HephaestusError::Internal(format!("Failed to execute cargo test: {}", e))
-            })?;
+        let res =
+            Self::run_sandboxed_cargo(project_dir, "test", &["--", "--nocapture"], 15).await?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let success = output.status.success();
-
-        let failing_test = parse_failing_test_name(&stdout, &stderr);
+        let failing_test = parse_failing_test_name(&res.stdout, &res.stderr);
 
         let report = FailureReport {
             failing_test,
-            exit_code: output.status.code(),
-            stderr,
-            stdout,
+            exit_code: res.return_code,
+            stderr: res.stderr,
+            stdout: res.stdout,
             duration_ms,
         };
 
-        Ok((success, report))
+        Ok((res.success, report))
     }
 
-    /// Generates a patch for common Rust errors like Index Out of Bounds.
+    /// Generates a patch candidate (Phase 4/5: WildMonkey).
     pub fn generate_patch_candidate(
         original_code: &str,
         target_file: &Path,
@@ -154,7 +175,7 @@ impl ProjectRepairEngine {
         })
     }
 
-    /// Runs a full, end-to-end repair cycle on a target Rust project.
+    /// Runs a full, end-to-end sandboxed repair cycle on a target Rust project.
     pub async fn execute_repair_cycle(
         original_project_dir: &Path,
         target_file_rel_path: &Path,
@@ -165,7 +186,7 @@ impl ProjectRepairEngine {
         let temp_workspace = temp_dir.path();
         Self::copy_dir_all(original_project_dir, temp_workspace)?;
 
-        // Step 2: Reproduce failure
+        // Step 2: Reproduce failure with sandboxed cargo test --offline
         let (initial_success, failure_report) = Self::run_cargo_test(temp_workspace).await?;
         if initial_success {
             return Err(HephaestusError::InvalidInput(
@@ -190,30 +211,30 @@ impl ProjectRepairEngine {
 
         let original_code = fs::read_to_string(&canonical_target)?;
 
+        // Phase 4/5: WildMonkey generates patch
         let patch_candidate =
             Self::generate_patch_candidate(&original_code, target_file_rel_path, &failure_report)?;
 
-        // Step 4: Apply patch to workspace copy only
+        // Phase 6: NeutralJudge applies patch to workspace copy
         fs::write(&canonical_target, &patch_candidate.patched_file_content)?;
 
-        // Step 5: Validate patch with cargo check, clippy, cargo test
+        // Phase 6: Sandboxed Empirical Validation (cargo check, clippy, cargo test)
         let val_start = Instant::now();
-        let check_output = Command::new("cargo")
-            .arg("check")
-            .current_dir(temp_workspace)
-            .output()
-            .await?;
+        let check_res = Self::run_sandboxed_cargo(temp_workspace, "check", &[], 15).await?;
+        let compiled = check_res.success;
 
-        let compiled = check_output.status.success();
-
-        let clippy_output = Command::new("cargo")
-            .arg("clippy")
-            .current_dir(temp_workspace)
-            .output()
-            .await?;
-        let clippy_passed = clippy_output.status.success();
+        let clippy_res = Self::run_sandboxed_cargo(temp_workspace, "clippy", &[], 15).await?;
+        let clippy_passed = clippy_res.success;
 
         let (test_success, post_patch_test_report) = Self::run_cargo_test(temp_workspace).await?;
+
+        // Phase 7: AngryMaster Policy & Security Gatekeeper
+        let unsafe_free = !patch_candidate.patched_file_content.contains("unsafe {")
+            && !patch_candidate.patched_file_content.contains("unsafe fn");
+        let line_budget_ok = patch_candidate.diff.lines().count() <= 200;
+
+        let master_approved =
+            compiled && clippy_passed && test_success && unsafe_free && line_budget_ok;
 
         let validation_report = ValidationReport {
             compiled,
@@ -224,10 +245,10 @@ impl ProjectRepairEngine {
             stderr: post_patch_test_report.stderr.clone(),
         };
 
-        let overall_success = compiled && clippy_passed && test_success;
+        let overall_success = master_approved;
         let unified_diff = Some(patch_candidate.diff.clone());
 
-        // Step 6: Compute hash & store RepairGenome in SQLite
+        // Phase 8: NarrativeAgent records verdict into RepairGenome
         let genome_hash = blake3::hash(original_code.as_bytes()).to_hex().to_string();
         let mut genome = RepairGenome::new(genome_hash.clone(), original_code);
         genome.telemetry_trigger = Some(failure_report.stderr.clone());
@@ -235,10 +256,24 @@ impl ProjectRepairEngine {
         if overall_success {
             genome.final_repaired_code = Some(patch_candidate.patched_file_content.clone());
             genome.narrative_summary = Some(format!(
-                "Successfully repaired index out of bounds bug in {}. Failing test '{}' now passes.",
+                "[NarrativeAgent] Successfully repaired bug in {}. NeutralJudge verified tests pass. AngryMaster approved patch (no unsafe, budget ok). Failing test '{}' resolved.",
                 target_file_rel_path.display(),
                 failure_report.failing_test
             ));
+        } else {
+            genome
+                .rejected_patches
+                .push(crate::memory::genome_store::RejectionRecord {
+                    patch: patch_candidate.diff.clone(),
+                    reason: format!(
+                        "Veto: compiled={}, clippy={}, tests={}, unsafe_free={}",
+                        compiled, clippy_passed, test_success, unsafe_free
+                    ),
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs(),
+                });
         }
 
         {
