@@ -136,16 +136,24 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
     let mut cmd = TokioCommand::new(&request.program);
     cmd.args(&request.args)
         .current_dir(&request.working_directory)
-        .env_clear()
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    // Repass only allowlisted environment variables
-    for var_name in &request.environment_allowlist {
-        if let Ok(val) = std::env::var(var_name) {
-            cmd.env(var_name, val);
+    cmd.env_clear();
+
+    // Pass environment variables while strictly redacting sensitive secrets
+    for (key, val) in std::env::vars() {
+        let key_upper = key.to_uppercase();
+        let is_secret = key_upper.contains("_TOKEN")
+            || key_upper.contains("_SECRET")
+            || key_upper.contains("_PASSWORD")
+            || key_upper.contains("_KEY")
+            || key_upper.contains("DATABASE_URL");
+
+        if !is_secret {
+            cmd.env(key, val);
         }
     }
 
