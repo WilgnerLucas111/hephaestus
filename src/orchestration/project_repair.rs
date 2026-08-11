@@ -87,6 +87,12 @@ impl ProjectRepairEngine {
             args.push(arg.to_string());
         }
 
+        let limits = match subcommand {
+            "check" | "clippy" => crate::sandbox::executor::ResourceLimits::compilation_profile(),
+            "test" => crate::sandbox::executor::ResourceLimits::test_execution_profile(),
+            _ => crate::sandbox::executor::ResourceLimits::strict_sandbox_profile(),
+        };
+
         let req = crate::sandbox::executor::ExecutionRequest {
             program: PathBuf::from("cargo"),
             args,
@@ -107,7 +113,7 @@ impl ProjectRepairEngine {
                 "LANG".to_string(),
             ],
             network_policy: crate::sandbox::executor::NetworkPolicy::Disabled,
-            resource_limits: crate::sandbox::executor::ResourceLimits::default(),
+            resource_limits: limits,
         };
 
         crate::sandbox::executor::execute_request(&req)

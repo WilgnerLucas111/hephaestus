@@ -52,9 +52,9 @@ impl ResourceLimits {
     /// Resource limit profile suitable for running test suites
     pub fn test_execution_profile() -> Self {
         Self {
-            max_memory_bytes: Some(512 * 1024 * 1024),    // 512MB
-            max_file_size_bytes: Some(100 * 1024 * 1024), // 100MB
-            max_processes: Some(128),
+            max_memory_bytes: Some(2 * 1024 * 1024 * 1024), // 2GB
+            max_file_size_bytes: Some(1024 * 1024 * 1024),  // 1GB
+            max_processes: None,
         }
     }
 
@@ -257,10 +257,14 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
         }),
         Ok(Err(e)) => Err(SandboxError::WaitFailed(e)),
         Err(_) => {
-            // Kill entire process group with SIGKILL
+            let mut kill_status = String::new();
             if let Some(pgid) = child_pid {
-                unsafe {
-                    libc::kill(-pgid, libc::SIGKILL);
+                let kill_res = unsafe { libc::kill(-pgid, libc::SIGKILL) };
+                if kill_res == 0 {
+                    kill_status = format!(" (Process group {} terminated via SIGKILL)", pgid);
+                } else {
+                    let err = std::io::Error::last_os_error();
+                    kill_status = format!(" (SIGKILL notice: {})", err);
                 }
             }
 
@@ -270,8 +274,9 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
                 interrupted: true,
                 stdout: String::new(),
                 stderr: format!(
-                    "Execution timed out after {} seconds",
-                    request.timeout.as_secs()
+                    "Execution timed out after {} seconds{}",
+                    request.timeout.as_secs(),
+                    kill_status
                 ),
             })
         }
@@ -433,5 +438,33 @@ mod tests {
             !result.success,
             "Writing beyond RLIMIT_FSIZE file limit should fail"
         );
+    }
+
+    #[tokio::test]
+    async fn test_process_tree_killed_after_timeout() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pid_file = temp_dir.path().join("child.pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+
+        let mut req = ExecutionRequest::new("sh", temp_dir.path().to_str().unwrap());
+        req.args = vec!["-c".to_string(), script];
+        req.environment_allowlist = vec!["PATH".to_string()];
+        req.timeout = Duration::from_millis(300);
+
+        let result = execute_request(&req).await.unwrap();
+        assert!(result.interrupted, "Execution should time out");
+
+        #[allow(clippy::collapsible_if)]
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                // Wait briefly for SIGKILL delivery to take effect
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let kill_check = unsafe { libc::kill(pid, 0) };
+                assert_eq!(
+                    kill_check, -1,
+                    "Subprocess background child should be killed after timeout"
+                );
+            }
+        }
     }
 }
