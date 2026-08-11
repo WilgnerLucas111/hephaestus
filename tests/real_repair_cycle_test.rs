@@ -60,6 +60,9 @@ mod tests {
             .await?;
 
     // 4. Assertions on repair outcome
+    if !result.success {
+        eprintln!("REPAIR FAILURE DETAILS: {:#?}", result);
+    }
     assert!(result.success, "Repair cycle should succeed");
     assert!(
         result

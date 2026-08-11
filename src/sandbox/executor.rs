@@ -157,10 +157,10 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
         }
     }
 
-    // Set process group in pre_exec for group termination on timeout
+    // Set process group in pre_exec for group termination on timeout (if allowed by OS/container)
     unsafe {
         cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
+            let _ = libc::setpgid(0, 0);
             Ok(())
         });
     }
