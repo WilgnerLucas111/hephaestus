@@ -48,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("📁 Target Project: {}", project.display());
             println!("📄 Target File:    {}", target.display());
-            println!("🔒 Isolation Mode: Sandboxed Temp Workspace (--offline)");
+            println!("🔒 Isolation Mode: Sandboxed Temp Workspace");
             println!("========================================================\n");
 
             let db_path = PathBuf::from("hephaestus_genomes.db");
@@ -77,6 +77,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("\n📜 Unified Diff:\n{}", patch.diff);
                     }
 
+                    let unsafe_free = outcome.patch.as_ref().is_none_or(|p| {
+                        !p.patched_file_content.contains("unsafe {")
+                            && !p.patched_file_content.contains("unsafe fn")
+                    });
+                    let line_budget_ok = outcome
+                        .patch
+                        .as_ref()
+                        .is_none_or(|p| p.diff.lines().count() <= 200);
+
                     if let Some(ref val) = outcome.validation {
                         println!("⚖️ [NeutralJudge & AngryMaster] Empirical Validation:");
                         println!(
@@ -103,8 +112,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "❌ FAILED"
                             }
                         );
-                        println!("   • Unsafe Free:  ✅ PASSED");
-                        println!("   • Line Budget:  ✅ PASSED");
+                        println!(
+                            "   • Unsafe Free:  {}",
+                            if unsafe_free {
+                                "✅ PASSED"
+                            } else {
+                                "❌ FAILED"
+                            }
+                        );
+                        println!(
+                            "   • Line Budget:  {}",
+                            if line_budget_ok {
+                                "✅ PASSED"
+                            } else {
+                                "❌ FAILED"
+                            }
+                        );
                         println!("   • Validation Time: {} ms", val.duration_ms);
                     }
 
@@ -115,10 +138,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         println!("   • Host Project Safety: ORIGINAL WORKSPACE REMAINED UNTOUCHED");
                     } else {
                         println!("   ❌ REPAIR VETOED BY TRIBUNAL");
+                        std::process::exit(1);
                     }
                 }
                 Err(e) => {
                     eprintln!("❌ Repair Cycle Failed: {}", e);
+                    std::process::exit(1);
                 }
             }
         }

@@ -143,21 +143,23 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
 
     cmd.env_clear();
 
-    // Pass environment variables while strictly redacting sensitive secrets
-    for (key, val) in std::env::vars() {
-        let key_upper = key.to_uppercase();
-        let is_secret = key_upper.contains("_TOKEN")
-            || key_upper.contains("_SECRET")
-            || key_upper.contains("_PASSWORD")
-            || key_upper.contains("_KEY")
-            || key_upper.contains("DATABASE_URL");
+    // Pass environment variables only if present in environment_allowlist and non-secret
+    for var_name in &request.environment_allowlist {
+        if let Ok(val) = std::env::var(var_name) {
+            let key_upper = var_name.to_uppercase();
+            let is_secret = key_upper.contains("_TOKEN")
+                || key_upper.contains("_SECRET")
+                || key_upper.contains("_PASSWORD")
+                || key_upper.contains("_KEY")
+                || key_upper.contains("DATABASE_URL");
 
-        if !is_secret {
-            cmd.env(key, val);
+            if !is_secret {
+                cmd.env(var_name, val);
+            }
         }
     }
 
-    // Set process group in pre_exec for group termination on timeout (if allowed by OS/container)
+    // Set process group in pre_exec for group termination on timeout
     unsafe {
         cmd.pre_exec(|| {
             let _ = libc::setpgid(0, 0);
@@ -166,6 +168,7 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
     }
 
     let child = cmd.spawn().map_err(SandboxError::SpawnFailed)?;
+    let child_pid = child.id().map(|id| id as i32);
 
     match tokio::time::timeout(request.timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => Ok(SandboxResult {
@@ -176,16 +179,25 @@ pub async fn execute_request(request: &ExecutionRequest) -> Result<SandboxResult
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         }),
         Ok(Err(e)) => Err(SandboxError::WaitFailed(e)),
-        Err(_) => Ok(SandboxResult {
-            success: false,
-            return_code: None,
-            interrupted: true,
-            stdout: String::new(),
-            stderr: format!(
-                "Execution timed out after {} seconds",
-                request.timeout.as_secs()
-            ),
-        }),
+        Err(_) => {
+            // Kill entire process group with SIGKILL
+            if let Some(pgid) = child_pid {
+                unsafe {
+                    libc::kill(-pgid, libc::SIGKILL);
+                }
+            }
+
+            Ok(SandboxResult {
+                success: false,
+                return_code: None,
+                interrupted: true,
+                stdout: String::new(),
+                stderr: format!(
+                    "Execution timed out after {} seconds",
+                    request.timeout.as_secs()
+                ),
+            })
+        }
     }
 }
 

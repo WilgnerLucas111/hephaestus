@@ -353,31 +353,18 @@ pub fn generate_unified_diff_pub(old_text: &str, new_text: &str, file_path: &Pat
 }
 
 fn generate_unified_diff(old_text: &str, new_text: &str, file_path: &Path) -> String {
-    let mut diff = String::new();
-    diff.push_str(&format!("--- a/{}\n", file_path.display()));
-    diff.push_str(&format!("+++ b/{}\n", file_path.display()));
+    let diff = similar::TextDiff::from_lines(old_text, new_text);
+    let mut output = String::new();
+    output.push_str(&format!("--- a/{}\n", file_path.display()));
+    output.push_str(&format!("+++ b/{}\n", file_path.display()));
 
-    let old_lines: Vec<&str> = old_text.lines().collect();
-    let new_lines: Vec<&str> = new_text.lines().collect();
-
-    diff.push_str("@@ -1,");
-    diff.push_str(&old_lines.len().to_string());
-    diff.push_str(" +1,");
-    diff.push_str(&new_lines.len().to_string());
-    diff.push_str(" @@\n");
-
-    for line in &old_lines {
-        if !new_lines.contains(line) {
-            diff.push_str(&format!("-{}\n", line));
-        }
+    for change in diff.iter_all_changes() {
+        let sign = match change.tag() {
+            similar::ChangeTag::Delete => "-",
+            similar::ChangeTag::Insert => "+",
+            similar::ChangeTag::Equal => " ",
+        };
+        output.push_str(&format!("{}{}", sign, change));
     }
-    for line in &new_lines {
-        if !old_lines.contains(line) {
-            diff.push_str(&format!("+{}\n", line));
-        } else {
-            diff.push_str(&format!(" {}\n", line));
-        }
-    }
-
-    diff
+    output
 }
